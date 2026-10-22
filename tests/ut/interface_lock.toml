@@ -11,7 +11,7 @@
 schema = 1
 vllm_version_range = ">=0.32.0,<0.33.0"
 key_interface_count = 10
-target_count = 277
+target_count = 278
 
 [[key_interface]]
 symbol = "vllm.platforms.interface.PlatformEnum"
@@ -808,6 +808,14 @@ module = "vllm/model_executor/layers/fused_moe/utils.py"
 symbol = "moe_kernel_quantize_input"
 present = true
 fingerprint = "sha256:79bad14b9bf40653fc2d263b977bf2756b084ee52961a44cb3460fb9f07a1dc5"
+
+[[patch_target]]
+name = "vllm.model_executor.layers.fused_qk_norm_rope._fused_qk_rmsnorm_rope_gate_kernel"
+kind = "module"
+module = "vllm/model_executor/layers/fused_qk_norm_rope.py"
+symbol = "_fused_qk_rmsnorm_rope_gate_kernel"
+present = true
+fingerprint = "sha256:f507eefa70430e651c992c39bb6d5b54c70bc53471ce180ce80de36d75eaafac"
 
 [[patch_target]]
 name = "vllm.model_executor.layers.linear.dispatch_unquantized_gemm"
