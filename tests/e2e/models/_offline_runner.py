@@ -38,6 +38,38 @@ DEFAULT_SEED = 0
 DEFAULT_TRUST_REMOTE_CODE = True
 DEFAULT_TEMPERATURE = 0.0
 
+#: Batch of diverse prompts for throughput-oriented workloads (batch size 8).
+#: Each prompt is a self-contained technical/analytical question that exercises
+#: a range of vocabulary and reasoning complexity, keeping output length
+#: moderate under greedy decoding.
+PROMPTS: tuple[str, ...] = (
+    "Explain how paged attention manages KV cache memory in a batched"
+    " inference engine.  Cover block tables, copy-on-write for parallel"
+    " sampling, and the trade-off between block size and internal"
+    " fragmentation.",
+    "Compare tensor parallelism and pipeline parallelism for serving"
+    " large language models.  Discuss latency, throughput, communication"
+    " volume, and the conditions under which each strategy dominates.",
+    "Describe the continuous batching algorithm used by modern LLM"
+    " serving systems.  What happens when a new request arrives while"
+    " an existing batch is mid-decode?  How is fairness maintained?",
+    "Outline the quantization pipeline that converts a bfloat16 model"
+    " to INT4 with group-wise scaling.  Mention calibration, packing,"
+    " and the expected accuracy-throughput trade-off on a fixed accelerator.",
+    "Discuss speculative decoding: the draft-verify loop, how token"
+    " acceptance probability relates to draft model quality, and the"
+    " hardware utilisation implications of running two models in tandem.",
+    "Walk through the lifecycle of a single request inside an offline"
+    " LLM engine: tokenisation, scheduling, prefill, decode iterations,"
+    " detokenisation, and result assembly.  Identify the critical path.",
+    "Explain rotary position embedding (RoPE) and its extension to"
+    " long contexts via NTK-aware scaling.  Include the mathematical"
+    " formulation and its effect on attention score distribution.",
+    "Analyse the memory footprint of a 70-billion-parameter Transformer"
+    " during inference.  Break it down into weights, KV cache, activations,"
+    " and CUDA graph reserves, and suggest three ways to reduce peak usage.",
+)
+
 #: Environment variable that may override the fixed checkpoint path.
 MODEL_ROOT_ENV = "VLLM_SAIL_MODEL_ROOT"
 

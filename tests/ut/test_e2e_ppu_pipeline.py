@@ -24,6 +24,8 @@ NIGHTLY_WORKFLOW = ROOT / ".github" / "workflows" / "ppu-accuracy-nightly.yaml"
 KERNEL_PERF_WORKFLOW = ROOT / ".github" / "workflows" / "_ppu-kernel-perf.yaml"
 KERNEL_PERF_LABEL_WORKFLOW = ROOT / ".github" / "workflows" / "kernel-perf-label.yaml"
 PERF_REGRESSION_WORKFLOW = ROOT / ".github" / "workflows" / "perf-regression.yaml"
+PERF_REGRESSION_SCRIPT = ROOT / "scripts" / "ci" / "perf_regression.sh"
+MODEL_PERF_TEST = ROOT / "tests" / "e2e" / "perf" / "test_model_perf.py"
 DEBUG_WORKFLOW = ROOT / ".github" / "workflows" / "ppu-debug.yaml"
 
 
@@ -963,3 +965,61 @@ def test_runtime_container_kernel_perf_mode() -> None:
     assert "MODEL_PATH" not in kernel_text
     assert "HF_HOME" not in kernel_text
     assert "GSM8K_DATASET_PATH" not in kernel_text
+
+
+# --- perf regression (model) -------------------------------------------------
+
+
+def test_perf_regression_workflow_no_hardcoded_hf_paths() -> None:
+    """The perf workflow must inherit its cache instead of hardcoding paths."""
+    text = PERF_REGRESSION_WORKFLOW.read_text()
+    workflow = _workflow(PERF_REGRESSION_WORKFLOW)
+    matrix = workflow["jobs"]["perf"]["strategy"]["matrix"]
+    for entry in matrix["include"]:
+        assert "hf_home" not in entry, f"hf_home leaked into matrix entry: {entry}"
+        assert "hf_cache" not in entry, f"hf_cache leaked into matrix entry: {entry}"
+    assert "/nas_aisw/datasets/hf_home" not in text
+    assert "/ppusw/datasets/hf_home" not in text
+
+
+def test_perf_regression_workflow_model_lanes_have_offline_protection() -> None:
+    """Model lanes must prevent Hugging Face and transformers network access."""
+    text = PERF_REGRESSION_WORKFLOW.read_text()
+    assert "HF_HUB_OFFLINE=1" in text
+    assert "TRANSFORMERS_OFFLINE=1" in text
+
+
+def test_perf_regression_script_exports_transformers_offline() -> None:
+    """The model perf runner must export both offline controls."""
+    text = PERF_REGRESSION_SCRIPT.read_text()
+    assert "TRANSFORMERS_OFFLINE" in text
+    assert "export HF_HUB_OFFLINE TRANSFORMERS_OFFLINE" in text
+
+
+def test_perf_regression_script_does_not_hardcode_hf_paths() -> None:
+    """The model perf runner must not contain hardcoded cache paths."""
+    text = PERF_REGRESSION_SCRIPT.read_text()
+    assert "/nas_aisw/datasets/hf_home" not in text
+    assert "/ppusw/datasets/hf_home" not in text
+
+
+def test_model_perf_uses_model_id_not_checkpoint() -> None:
+    """PerfModel must use the PR 88 model_id loading contract."""
+    import ast
+
+    text = MODEL_PERF_TEST.read_text()
+    tree = ast.parse(text)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == "PerfModel":
+            field_names = [
+                stmt.target.id
+                for stmt in node.body
+                if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name)
+            ]
+            assert "model_id" in field_names, "PerfModel must have a model_id field"
+            assert "checkpoint" not in field_names, (
+                "PerfModel must not have a checkpoint field (use model_id)"
+            )
+            break
+    else:
+        raise AssertionError("PerfModel class not found in test_model_perf.py")

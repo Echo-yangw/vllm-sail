@@ -1,10 +1,10 @@
 name: Perf Regression
 
-# Weekly dual-chip kernel performance monitoring. Every run builds wheels from
-# the exact SAIL commit that triggered this workflow; no preview or historical
-# build is queried or reused. Reviewed golden baselines remain read-only in the
-# checkout. Each lane uploads its pending candidate and comparison report for a
-# human-maintained golden update PR.
+# Weekly dual-chip kernel and model performance monitoring. Every run builds
+# wheels from the exact SAIL commit that triggered this workflow; no preview or
+# historical build is queried or reused. Reviewed golden baselines remain
+# read-only in the checkout. Each lane uploads its pending candidate and
+# comparison report for a human-maintained golden update PR.
 
 on:
   workflow_dispatch:
@@ -51,12 +51,29 @@ jobs:
           - chip: 810e
             board: OAM-810E
             nproc: 8
+            suite: kernel
+            test_path: tests/e2e/perf/test_kernel_perf.py
             timeout: 60
           - chip: 890p
             board: ZW-M890P
             nproc: 8
+            suite: kernel
+            test_path: tests/e2e/perf/test_kernel_perf.py
             timeout: 60
-
+          # --- 810E model (offline LLM, TP=8 derived from chip profile)
+          - chip: 810e
+            board: OAM-810E
+            nproc: 8
+            suite: model
+            test_path: tests/e2e/perf/test_model_perf.py
+            timeout: 180
+          # --- 890P model (offline LLM, TP=8 derived from chip profile)
+          - chip: 890p
+            board: ZW-M890P
+            nproc: 8
+            suite: model
+            test_path: tests/e2e/perf/test_model_perf.py
+            timeout: 180
     steps:
       - name: Disable internal GitHub mirror rewrite
         shell: bash
@@ -122,7 +139,7 @@ jobs:
           job_suffix: perf-${{ matrix.chip }}-kernel
           source_dir: /workspace/source
           artifact_paths: wheels/**
-          extra_env: SUITE=kernel,TEST_PATH=tests/e2e/perf/test_kernel_perf.py,PYTEST_MARKER=perf,RESULTS_DIR=/mnt/wl_nas/devops/${{ github.run_id }}-${{ github.run_attempt }}/perf-${{ matrix.chip }}-kernel,WHEELS_DIR=/workspace/source/wheels,EXPECTED_SAIL_COMMIT=${{ github.sha }},VLLM_USE_RUST_FRONTEND=0,VLLM_USE_RUST_BENCH=0
+          extra_env: SUITE=${{ matrix.suite }},TEST_PATH=${{ matrix.test_path }},PYTEST_MARKER=perf,HF_HUB_OFFLINE=1,TRANSFORMERS_OFFLINE=1,RESULTS_DIR=/mnt/wl_nas/devops/${{ github.run_id }}-${{ github.run_attempt }}/perf-${{ matrix.chip }}-${{ matrix.suite }},WHEELS_DIR=/workspace/source/wheels,EXPECTED_SAIL_COMMIT=${{ github.sha }},VLLM_USE_RUST_FRONTEND=0,VLLM_USE_RUST_BENCH=0
           container_options: |
             privileged: true
             host_ipc: true

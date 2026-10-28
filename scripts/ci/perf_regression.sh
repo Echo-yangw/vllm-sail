@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
 #
-# PPU performance-regression runner (kernel perf lane).
+# PPU performance-regression runner (kernel + model E2E lanes).
 # Executed inside the PPU pod dispatched by t-head/ppu-scheduler-action, one
 # lane per (chip, suite). It follows the PR49 runtime-container contract:
 # same wheel install / platform self-check, but it drives tests/e2e/perf and
@@ -21,7 +21,9 @@
 #   PYTEST_MARKER      pytest -m expression (default: "perf")
 #   WHEELS_DIR         directory holding the downloaded *.whl artifacts
 #   RESULTS_DIR        absolute output dir for xml/logs/report/baseline/ppu-smi
-#   MODEL_PATH         (model suite) checkpoint path -> VLLM_SAIL_MODEL_ROOT
+#   HF_HOME            (model suite) HuggingFace cache root for offline model resolution
+#   HF_HUB_OFFLINE     (model suite) "1" to prevent HF Hub network access
+#   TRANSFORMERS_OFFLINE (model suite) "1" to prevent transformers network access
 #   BASELINE_ROOT      read-only golden root (default: repo baselines dir)
 #   BASELINE_OUTPUT_ROOT writable candidate root (default: RESULTS_DIR/baselines)
 set -Eeuo pipefail
@@ -37,7 +39,9 @@ TEST_PATH="${TEST_PATH:?TEST_PATH is required}"
 PYTEST_MARKER="${PYTEST_MARKER:-perf}"
 WHEELS_DIR="${WHEELS_DIR:?WHEELS_DIR is required}"
 RESULTS_DIR="${RESULTS_DIR:?RESULTS_DIR is required}"
-MODEL_PATH="${MODEL_PATH:-}"
+HF_HOME="${HF_HOME:-}"
+HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
+TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
 BASELINE_ROOT="${BASELINE_ROOT:-${ROOT_DIR}/tests/e2e/perf/baselines}"
 BASELINE_OUTPUT_ROOT="${BASELINE_OUTPUT_ROOT:-${RESULTS_DIR}/baselines}"
 
@@ -52,8 +56,8 @@ log() { printf '\n=== %s ===\n' "$1"; }
 # ------------------------------------------------------------------
 log "environment"
 echo "SUITE=${SUITE} TEST_PATH=${TEST_PATH} PYTEST_MARKER=${PYTEST_MARKER:-<none>}"
-echo "MODEL_PATH=${MODEL_PATH:-<none>} BASELINE_ROOT=${BASELINE_ROOT}"
-echo "BASELINE_OUTPUT_ROOT=${BASELINE_OUTPUT_ROOT} RESULTS_DIR=${RESULTS_DIR}"
+echo "HF_HOME=${HF_HOME:-<none>} HF_HUB_OFFLINE=${HF_HUB_OFFLINE} TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE}"
+echo "BASELINE_ROOT=${BASELINE_ROOT} BASELINE_OUTPUT_ROOT=${BASELINE_OUTPUT_ROOT} RESULTS_DIR=${RESULTS_DIR}"
 python -c 'import sys; print("python", sys.version)'
 
 # ------------------------------------------------------------------
@@ -104,6 +108,22 @@ print("Capability:", current_platform.get_device_capability())
 print("vLLM:", vllm.__version__)
 print("vLLM SAIL:", vllm_sail.__version__)
 PY
+
+# ------------------------------------------------------------------
+# For the model suite, export offline environment variables so that vLLM resolves
+# HuggingFace model IDs from the local cache without network access. HF_HOME is
+# inherited from the pod/runner environment (PR 88 contract); it is never
+# hardcoded per-model.
+if [[ "${SUITE}" == "model" ]]; then
+    export HF_HUB_OFFLINE TRANSFORMERS_OFFLINE
+    if [[ -n "${HF_HOME}" ]]; then
+        export HF_HOME
+        test -d "${HF_HOME}" || { echo "HF_HOME directory missing: ${HF_HOME}"; exit 1; }
+        log "model weights via HF_HOME=${HF_HOME} (offline=${HF_HUB_OFFLINE})"
+    else
+        log "model weights via default HF cache (offline=${HF_HUB_OFFLINE})"
+    fi
+fi
 
 # ------------------------------------------------------------------
 log "pytest perf ${SUITE}"
