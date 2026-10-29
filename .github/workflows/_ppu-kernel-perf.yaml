@@ -1,0 +1,108 @@
+name: PPU kernel performance
+
+# Called by kernel-perf-label.yaml (label trigger) and ppu-debug.yaml (manual).
+
+on:
+  workflow_call:
+    inputs:
+      pr_mode:
+        type: boolean
+        default: false
+      pr_head_sha:
+        type: string
+        default: ""
+      build_run_id:
+        description: PPU CI build run supplying ppu-wheels-<run_id>
+        required: true
+        type: string
+      wheel_source_sha:
+        description: Exact SAIL commit recorded in that run's wheel manifest
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+cache-mode: none
+
+jobs:
+  kernel-perf:
+    name: Kernel Perf (890P)
+    runs-on: 8-ppu-m890p
+    timeout-minutes: 60
+    env:
+      GIT_CONFIG_NOSYSTEM: "1"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Prepare private runtime directories and Git configuration
+        id: runtime
+        run: |
+          config="$(mktemp "${RUNNER_TEMP}/git-config.XXXXXX")"
+          wheels="$(mktemp -d "${RUNNER_TEMP}/ppu-kernel-perf-wheels.XXXXXX")"
+          artifacts="$(mktemp -d "${RUNNER_TEMP}/ppu-kernel-perf-artifacts.XXXXXX")"
+          source_rel=".ppu-kernel-perf-source-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          source="${GITHUB_WORKSPACE}/${source_rel}"
+          {
+            printf 'GIT_CONFIG_GLOBAL=%s\n' "$config"
+            printf 'wheels=%s\n' "$wheels"
+            printf 'artifacts=%s\n' "$artifacts"
+            printf 'source_rel=%s\n' "$source_rel"
+            printf 'source=%s\n' "$source"
+          } >> "$GITHUB_OUTPUT"
+          printf 'GIT_CONFIG_GLOBAL=%s\n' "$config" >> "$GITHUB_ENV"
+
+      - name: Require disabled cache access
+        uses: actions/github-script@v7
+        with:
+          script: |
+            if (process.env.ACTIONS_CACHE_MODE !== 'none') {
+              core.setFailed('PPU CI requires cache-mode: none');
+            }
+
+      - name: Check out vLLM SAIL
+        uses: actions/checkout@v4
+        with:
+          github-server-url: https://github.com
+          ref: ${{ inputs.pr_head_sha || github.sha }}
+          path: ${{ steps.runtime.outputs.source_rel }}
+          persist-credentials: false
+
+      - name: Verify checked-out revision
+        env:
+          EXPECTED_SHA: ${{ inputs.pr_head_sha || github.sha }}
+          SOURCE_DIR: ${{ steps.runtime.outputs.source }}
+        run: test "$(git -c safe.directory="$SOURCE_DIR" -C "$SOURCE_DIR" rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Download CI-built wheels
+        uses: actions/download-artifact@v4
+        with:
+          name: ppu-wheels-${{ inputs.build_run_id }}
+          path: ${{ steps.runtime.outputs.wheels }}
+          run-id: ${{ inputs.build_run_id }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+
+      - name: Run kernel perf regression in the preloaded CUDA-compatible runtime
+        env:
+          PPU_CI_SOURCE_DIR: ${{ steps.runtime.outputs.source }}
+          PPU_CI_SOURCE_SHA: ${{ inputs.pr_head_sha || github.sha }}
+          PPU_CI_WHEELS_DIR: ${{ steps.runtime.outputs.wheels }}
+          PPU_CI_ARTIFACT_DIR: ${{ steps.runtime.outputs.artifacts }}
+          PPU_CI_DEVICE_COUNT: "8"
+          PPU_CI_REQUIRE_PR_ARTIFACT: ${{ inputs.pr_mode }}
+          PPU_CI_WHEEL_SOURCE_SHA: ${{ inputs.wheel_source_sha }}
+          SUITE: kernel
+        run: bash "${PPU_CI_SOURCE_DIR}/scripts/ci/ppu_runtime_container.sh" kernel-perf
+
+      - name: Upload kernel perf diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ppu-kernel-perf-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ steps.runtime.outputs.artifacts }}/**
+            ${{ steps.runtime.outputs.wheels }}/wheel-manifest.json
+          if-no-files-found: warn
+          retention-days: 14

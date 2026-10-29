@@ -40,6 +40,8 @@ def test_runtime_wrapper_mounts_inputs_read_only_and_artifacts_writable():
     assert "--env HF_HUB_OFFLINE=1" in text
     assert "--env TRANSFORMERS_OFFLINE=1" in text
     assert 'target=/artifacts"' in text
+    assert "--env BASELINE_ROOT=/source/tests/e2e/perf/baselines" in text
+    assert "--env BASELINE_OUTPUT_ROOT=/artifacts/baselines" in text
     assert "/source/scripts/ci/ppu_pin_ut.sh" in text
     assert "/source/scripts/ci/ppu_e2e_smoke.sh" in text
 
