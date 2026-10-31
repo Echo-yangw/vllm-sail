@@ -86,8 +86,12 @@ def request_json(url: str, timeout: float, body: dict | None = None) -> dict:
         return json.load(response)
 
 
-def validate_answer(response: dict, served_name: str) -> str:
+def validate_answer(
+    response: dict, served_name: str, *, answer_format: str = "plain"
+) -> str:
     """Require a complete, correct final answer, rather than reasoning or a match."""
+    if answer_format not in ("plain", "inline_think"):
+        raise ValueError(f"unknown answer format: {answer_format}")
     if response.get("model") != served_name:
         raise ValueError("response model does not match this run's served identity")
     choices = response.get("choices", [])
@@ -97,6 +101,15 @@ def validate_answer(response: dict, served_name: str) -> str:
     content = message.get("content")
     if message.get("tool_calls") or not isinstance(content, str):
         raise ValueError("expected a final textual answer")
+    if answer_format == "inline_think" and "</think>" in content:
+        if content.count("</think>") != 1:
+            raise ValueError("ambiguous inline reasoning boundary")
+        reasoning, content = content.split("</think>")
+        openings = reasoning.count("<think>")
+        if openings > 1 or (
+            openings == 1 and not reasoning.lstrip().startswith("<think>")
+        ):
+            raise ValueError("malformed inline reasoning prefix")
     if content.strip() != "42":
         raise ValueError(f"incorrect final answer: {content!r}; expected '42'")
     return content
@@ -336,6 +349,7 @@ def run_sanity(
 ) -> dict:
     """Write evidence in a fresh directory; any failed gate returns failed status."""
     profile = load_profiles()[profile_key]
+    answer_format = profile.get("answer_format", "plain")
     checkpoint_root = checkpoint_root.resolve()
     output = output.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -352,6 +366,7 @@ def run_sanity(
     }
     invocation = {
         "profile": profile_key,
+        "answer_format": answer_format,
         "argv": command,
         "env_overrides": profile.get("env", {}),
         "profile_sha256": hashlib.sha256(PROFILES_PATH.read_bytes()).hexdigest(),
@@ -367,12 +382,15 @@ def run_sanity(
         "status": "failed",
         "profile": profile_key,
         "case": profile_key,
+        "answer_format": answer_format,
     }
     process = None
     log = output / "serve.log"
     try:
         if min(ready_timeout, request_timeout, max_tokens) <= 0:
             raise ValueError("timeouts and token budget must be positive")
+        if answer_format not in ("plain", "inline_think"):
+            raise ValueError(f"unknown answer format: {answer_format}")
         checkpoint = checkpoint_root / profile["checkpoint"]
         if not (checkpoint / "config.json").is_file():
             raise FileNotFoundError(f"missing checkpoint config: {checkpoint}")
@@ -410,7 +428,9 @@ def run_sanity(
             base_url + "/v1/chat/completions", request_timeout, body
         )
         write_json(output / "request-0.json", response)
-        result["answer"] = validate_answer(response, served_name)
+        result["answer"] = validate_answer(
+            response, served_name, answer_format=answer_format
+        )
         if with_stream:
             response = stream_answer(
                 base_url + "/v1/chat/completions",
@@ -419,7 +439,9 @@ def run_sanity(
                 output / "stream.sse",
             )
             write_json(output / "stream.json", response)
-            result["stream_answer"] = validate_answer(response, served_name)
+            result["stream_answer"] = validate_answer(
+                response, served_name, answer_format=answer_format
+            )
         with build_opener(ProxyHandler({})).open(
             base_url + "/metrics", timeout=10
         ) as response:

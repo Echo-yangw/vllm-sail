@@ -40,9 +40,14 @@ consumed by this plugin; retaining it would silently leave the default timeout.
 
 The default request asks for 17 + 25 and requires the complete final answer
 `42` with natural `stop`. Reasoning without a final answer, truncation, wrong
-answers, stale model identities and broken SSE fail. The default 2048-token
-generation budget and 3600-second readiness budget are bounded; these are
-budgets, not measured performance. Freezing a different budget before execution
+answers, stale model identities and broken SSE fail. The generation budget
+includes any reasoning. GLM's default template prefills
+`<think>`; its explicit `inline_think` answer format accepts a single
+`</think>` boundary and grades only the complete final text after it. A wrong
+or missing final answer still fails even if the reasoning contains `42`.
+Ordinary/SSE raw reasoning is preserved; plain profiles never strip it.
+The default 2048-token generation budget and 3600-second readiness budget are
+bounded; these are budgets, not measured performance. Freezing a different budget before execution
 is allowed; reruns retain separate evidence. A quick probe sends one ordinary
 request. Qualification also uses `--with-stream`, which sends one additional
 request and requires `[DONE]` and a complete final answer.

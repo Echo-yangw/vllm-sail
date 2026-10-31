@@ -43,6 +43,7 @@
     ]
   },
   "glm5.2-mxfp4-tp8": {
+    "answer_format": "inline_think",
     "checkpoint": "checkpoints/LLM/zhipu/v5.2/GLM-5.2-MXFP4-FP8-fromBF16",
     "serve_args": [
       "--trust-remote-code", "--tensor-parallel-size", "8",

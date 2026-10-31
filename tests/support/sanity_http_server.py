@@ -47,21 +47,30 @@ def main() -> None:
                 return
             finish = "length" if args.mode == "truncated" else "stop"
             content = "43" if args.mode == "wrong" else "42"
+            if args.mode == "inline-think":
+                content = "Compute 17 + 25 = 42.</think>42"
             if body.get("stream"):
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
                 self.end_headers()
-                event = {
-                    "model": args.model,
-                    "choices": [
-                        {
-                            "index": 0,
-                            "delta": {"content": content},
-                            "finish_reason": finish,
-                        }
-                    ],
-                }
-                self.wfile.write(b"data: " + json.dumps(event).encode() + b"\n\n")
+                pieces = [content]
+                if args.mode == "inline-think":
+                    split = content.index("</think>") + 4
+                    pieces = [content[:split], content[split:-2], content[-2:]]
+                for index, piece in enumerate(pieces):
+                    event = {
+                        "model": args.model,
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {"content": piece},
+                                "finish_reason": finish
+                                if index == len(pieces) - 1
+                                else None,
+                            }
+                        ],
+                    }
+                    self.wfile.write(b"data: " + json.dumps(event).encode() + b"\n\n")
                 if args.mode != "missing-done":
                     self.wfile.write(b"data: [DONE]\n\n")
             else:

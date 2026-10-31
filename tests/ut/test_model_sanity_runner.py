@@ -49,9 +49,49 @@ def test_accepts_complete_correct_final_answer():
     assert sanity.validate_answer(completion(" 42\n"), "this-run") == " 42\n"
 
 
+@pytest.mark.parametrize(
+    "content",
+    [
+        "We compute the sum.</think>42",
+        "<think>We compute the sum.</think>42",
+        "</think> 42\n",
+        "42",
+    ],
+)
+def test_inline_reasoning_uses_only_the_complete_final_answer(content):
+    result = sanity.validate_answer(
+        completion(content), "this-run", answer_format="inline_think"
+    )
+    assert result.strip() == "42"
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "The answer is 42.</think>43",
+        "The answer is 42.</think>",
+        "<think>42",
+        "42</think>42</think>42",
+        "Reasoning</think>42 followed by an explanation",
+        "<think>nested<think>42</think>42",
+    ],
+)
+def test_inline_reasoning_cannot_hide_wrong_missing_or_ambiguous_finals(content):
+    with pytest.raises(ValueError):
+        sanity.validate_answer(
+            completion(content), "this-run", answer_format="inline_think"
+        )
+
+
+def test_plain_answers_do_not_implicitly_strip_inline_reasoning():
+    with pytest.raises(ValueError):
+        sanity.validate_answer(completion("Reasoning</think>42"), "this-run")
+
+
 def test_structured_profiles_preserve_parallel_quantization_and_speculation():
     profiles = sanity.load_profiles()
     assert len(profiles) == 5
+    assert profiles["glm5.2-mxfp4-tp8"]["answer_format"] == "inline_think"
     for key, profile in profiles.items():
         command = sanity.build_command(profile, Path("/data"), "this-run", 9985)
         assert command[command.index("--served-model-name") + 1] == "this-run"
@@ -87,15 +127,20 @@ def test_structured_profiles_preserve_parallel_quantization_and_speculation():
 
 @pytest.fixture
 def launch_external_double(tmp_path, monkeypatch):
-    profile = sanity.load_profiles()[sanity.BASELINE_PROFILE]
-    checkpoint = tmp_path / profile["checkpoint"]
-    checkpoint.mkdir(parents=True)
-    (checkpoint / "config.json").write_text("{}")
     server_script = Path(__file__).parents[1] / "support" / "sanity_http_server.py"
 
     def launch(
-        mode="ok", with_stream=True, execution_proof=None, inventory=None, port=None
+        mode="ok",
+        with_stream=True,
+        execution_proof=None,
+        inventory=None,
+        port=None,
+        profile_key=sanity.BASELINE_PROFILE,
     ):
+        selected = sanity.load_profiles()[profile_key]
+        selected_checkpoint = tmp_path / selected["checkpoint"]
+        selected_checkpoint.mkdir(parents=True, exist_ok=True)
+        (selected_checkpoint / "config.json").write_text("{}")
         if port is None:
             with socket.socket() as probe:
                 probe.bind(("127.0.0.1", 0))
@@ -121,9 +166,9 @@ def launch_external_double(tmp_path, monkeypatch):
             "installed_identity",
             lambda directory, env: inventory or {"external_double": True},
         )
-        output = tmp_path / (mode + "-run")
+        output = tmp_path / (profile_key + "-" + mode + "-run")
         result = sanity.run_sanity(
-            sanity.BASELINE_PROFILE,
+            profile_key,
             output=output,
             checkpoint_root=tmp_path,
             port=port,
@@ -135,6 +180,22 @@ def launch_external_double(tmp_path, monkeypatch):
         return result, output
 
     return launch
+
+
+def test_glm_inline_reasoning_http_and_split_sse_round_trip(launch_external_double):
+    result, output = launch_external_double(
+        mode="inline-think", profile_key="glm5.2-mxfp4-tp8"
+    )
+    assert result["status"] == "passed", result
+    assert result["answer"] == result["stream_answer"] == "42"
+    assert result["answer_format"] == "inline_think"
+    ordinary = json.loads((output / "request-0.json").read_text())
+    stream = json.loads((output / "stream.json").read_text())
+    assert (
+        ordinary["choices"][0]["message"]["content"]
+        == stream["choices"][0]["message"]["content"]
+    )
+    assert "</think>" in ordinary["choices"][0]["message"]["content"]
 
 
 @pytest.fixture
