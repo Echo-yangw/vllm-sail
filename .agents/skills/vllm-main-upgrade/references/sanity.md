@@ -32,6 +32,11 @@ Checkpoint suffixes and structured serving arguments are maintained together in
 `--checkpoint-root`; do not silently substitute a different model or precision.
 The runner binds localhost and adds a unique served-model name. It preserves
 profile settings, including DP versus TP, DeepEP, graphs and DSpark.
+The DP8/EP8 profile expresses the requested 30-minute process-group timeout
+using upstream's `--distributed-timeout-seconds 1800` and
+`--cpu-distributed-timeout-seconds 1800` arguments.
+The supplied `VLLM_SAIL_PROCESS_GROUP_TIMEOUT_M` environment variable is not
+consumed by this plugin; retaining it would silently leave the default timeout.
 
 The default request asks for 17 + 25 and requires the complete final answer
 `42` with natural `stop`. Reasoning without a final answer, truncation, wrong

@@ -75,6 +75,12 @@ def test_structured_profiles_preserve_parallel_quantization_and_speculation():
                 == "FULL_DECODE_ONLY"
             )
             assert profile["env"]["VLLM_ENGINE_READY_TIMEOUT_S"] == "3600"
+            for flag in (
+                "--distributed-timeout-seconds",
+                "--cpu-distributed-timeout-seconds",
+            ):
+                assert command[command.index(flag) + 1] == "1800"
+            assert "VLLM_SAIL_PROCESS_GROUP_TIMEOUT_M" not in profile["env"]
         else:
             assert command[command.index("--tensor-parallel-size") + 1] == "8"
 

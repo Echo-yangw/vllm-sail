@@ -26,7 +26,6 @@
   "deepseek-v4-mxfp4-dp8-ep8-ll": {
     "checkpoint": "checkpoints/ppu_quantization/qlean-test/DeepSeek-V4-Flash-0731-mxfp4-fp8channel",
     "env": {
-      "VLLM_SAIL_PROCESS_GROUP_TIMEOUT_M": "30",
       "VLLM_ENGINE_READY_TIMEOUT_S": "3600"
     },
     "serve_args": [
@@ -34,6 +33,8 @@
       "--max-num-batched-tokens", "1024", "--max-num-seqs", "128",
       "--gpu-memory-utilization=0.9", "--all2all-backend", "deepep_low_latency",
       "--enable-expert-parallel", "--data-parallel-size", "8",
+      "--distributed-timeout-seconds", "1800",
+      "--cpu-distributed-timeout-seconds", "1800",
       "--compilation-config", "{\"cudagraph_mode\":\"FULL_DECODE_ONLY\",\"custom_ops\":[\"all\"]}",
       "--tokenizer-mode", "deepseek_v4", "--tool-call-parser", "deepseek_v4",
       "--enable-auto-tool-choice", "--reasoning-parser", "deepseek_v4",
