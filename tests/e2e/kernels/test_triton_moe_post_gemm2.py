@@ -216,3 +216,10 @@ def test_empty_batch_does_not_invoke_the_hook(runtime):
     experts.apply(**args)
     runtime.torch.cuda.synchronize()
     assert args["output"].shape == (0, 64)
+    # A zero-grid launch can leave an SDK error for the next checked op.
+    probe = runtime.torch.full(
+        (2, 32, 576), 0x5A, device="cuda", dtype=runtime.torch.uint8
+    )
+    runtime.torch.testing.assert_close(
+        probe.cpu(), runtime.torch.full_like(probe.cpu(), 0x5A)
+    )

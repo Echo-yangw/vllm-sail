@@ -1006,6 +1006,11 @@ def apply(
         torch.int8,
     ]
 
+    # Empty EP batches have no expert rows. Avoid zero-grid SDK launches,
+    # which can leave an error for the next checked device operation.
+    if hidden_states.size(0) == 0:
+        return
+
     # We declared expects_unquantized_inputs (LoRA + DP/EP all2all), so the
     # prepare step deferred activation quantization to this kernel:
     # `hidden_states` arrives unquantized. Keep the unquantized tensor for
