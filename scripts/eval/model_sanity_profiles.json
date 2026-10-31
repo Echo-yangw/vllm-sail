@@ -51,6 +51,7 @@
     ]
   },
   "minimax-m3-fp8-tp8": {
+    "answer_format": "minimax_think",
     "checkpoint": "checkpoints/LLM/T-HEAD/m3/MiniMax-M3-Quant-W-FP8-PerChannel-A-FP8-PerToken",
     "serve_args": [
       "--trust-remote-code", "--tensor-parallel-size", "8",

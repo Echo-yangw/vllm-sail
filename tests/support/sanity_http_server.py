@@ -50,6 +50,10 @@ def main() -> None:
             if args.mode in ("inline-think", "inline-missing-stream-boundary"):
                 content = "Compute 17 + 25 = 42.</think>42"
             if body.get("stream"):
+                if args.mode == "minimax-think":
+                    content = "<mm:think>Compute 17 + 25 = 42.</mm:think>42"
+                elif args.mode == "minimax-missing-final":
+                    content = "<mm:think>The result is 42.</mm:think>"
                 if args.mode == "inline-missing-stream-boundary":
                     content = "42"
                 self.send_response(200)
@@ -59,6 +63,9 @@ def main() -> None:
                 if args.mode == "inline-think":
                     split = content.index("</think>") + 4
                     pieces = [content[:split], content[split:-2], content[-2:]]
+                elif args.mode == "minimax-think":
+                    split = content.index("</mm:think>") + 5
+                    pieces = [content[:3], content[3:split], content[split:-2], "42"]
                 for index, piece in enumerate(pieces):
                     event = {
                         "model": args.model,

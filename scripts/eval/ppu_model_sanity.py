@@ -90,7 +90,7 @@ def validate_answer(
     response: dict, served_name: str, *, answer_format: str = "plain"
 ) -> str:
     """Require a complete, correct final answer, rather than reasoning or a match."""
-    if answer_format not in ("plain", "inline_think"):
+    if answer_format not in ("plain", "inline_think", "minimax_think"):
         raise ValueError(f"unknown answer format: {answer_format}")
     if response.get("model") != served_name:
         raise ValueError("response model does not match this run's served identity")
@@ -110,6 +110,17 @@ def validate_answer(
             openings == 1 and not reasoning.lstrip().startswith("<think>")
         ):
             raise ValueError("malformed inline reasoning prefix")
+    elif answer_format == "minimax_think" and (
+        "<mm:think>" in content or "</mm:think>" in content
+    ):
+        opening, closing = "<mm:think>", "</mm:think>"
+        if (
+            content.count(opening) != 1
+            or content.count(closing) != 1
+            or not content.startswith(opening)
+        ):
+            raise ValueError("expected one complete MiniMax reasoning envelope")
+        _, content = content.split(closing)
     if content.strip() != "42":
         raise ValueError(f"incorrect final answer: {content!r}; expected '42'")
     return content
@@ -389,7 +400,7 @@ def run_sanity(
     try:
         if min(ready_timeout, request_timeout, max_tokens) <= 0:
             raise ValueError("timeouts and token budget must be positive")
-        if answer_format not in ("plain", "inline_think"):
+        if answer_format not in ("plain", "inline_think", "minimax_think"):
             raise ValueError(f"unknown answer format: {answer_format}")
         checkpoint = checkpoint_root / profile["checkpoint"]
         if not (checkpoint / "config.json").is_file():

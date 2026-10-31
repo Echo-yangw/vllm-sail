@@ -46,6 +46,12 @@ includes any reasoning. GLM's default template prefills
 `</think>` boundary and grades only the complete final text after it. A wrong
 or missing final answer still fails even if the reasoning contains `42`.
 Ordinary/SSE raw reasoning is preserved; plain profiles never strip it.
+MiniMax's explicit `minimax_think` format accepts parsed final text or exactly
+one complete `<mm:think>...</mm:think>` envelope starting at the beginning,
+followed by the complete final answer. Missing, nested or repeated markers and
+wrong or missing finals fail. Its baseline SSE can expose this envelope in
+`content` while the ordinary response separates reasoning. Preserve that API
+parsing difference; an answer pass does not establish reasoning-field consistency.
 The default 2048-token generation budget and 3600-second readiness budget are
 bounded; these are budgets, not measured performance. Freezing a different budget before execution
 is allowed; reruns retain separate evidence. A quick probe sends one ordinary

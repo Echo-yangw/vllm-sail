@@ -88,6 +88,37 @@ def test_plain_answers_do_not_implicitly_strip_inline_reasoning():
         sanity.validate_answer(completion("Reasoning</think>42"), "this-run")
 
 
+@pytest.mark.parametrize("content", ["42", "<mm:think>17 + 25 = 42</mm:think>42"])
+def test_minimax_accepts_parsed_final_or_complete_reasoning_envelope(content):
+    assert (
+        sanity.validate_answer(
+            completion(content), "this-run", answer_format="minimax_think"
+        )
+        == "42"
+    )
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "<mm:think>42",
+        "42</mm:think>42",
+        "<mm:think>42</mm:think>",
+        "<mm:think>42</mm:think>43",
+        "<mm:think>42</mm:think>42 explanation",
+        "<mm:think><mm:think>42</mm:think>42",
+        "prefix<mm:think>42</mm:think>42",
+        "<mm:think>42</mm:think>42</mm:think>42",
+        "</mm:think><mm:think>42",
+    ],
+)
+def test_minimax_requires_unambiguous_complete_final(content):
+    with pytest.raises(ValueError):
+        sanity.validate_answer(
+            completion(content), "this-run", answer_format="minimax_think"
+        )
+
+
 def test_structured_profiles_preserve_parallel_quantization_and_speculation():
     profiles = sanity.load_profiles()
     assert len(profiles) == 5
@@ -196,6 +227,20 @@ def test_glm_inline_reasoning_http_and_split_sse_round_trip(launch_external_doub
         == stream["choices"][0]["message"]["content"]
     )
     assert "</think>" in ordinary["choices"][0]["message"]["content"]
+
+
+@pytest.mark.parametrize("mode", ["minimax-think", "minimax-missing-final"])
+def test_minimax_parsed_http_and_explicit_split_sse_envelope(
+    launch_external_double, mode
+):
+    result, output = launch_external_double(mode=mode, profile_key="minimax-m3-fp8-tp8")
+    assert result["answer"] == "42"
+    assert result["cleanup"]["group_absent"]
+    assert result["status"] == ("passed" if mode == "minimax-think" else "failed")
+    ordinary = json.loads((output / "request-0.json").read_text())
+    streamed = json.loads((output / "stream.json").read_text())
+    assert ordinary["choices"][0]["message"]["content"] == "42"
+    assert "</mm:think>" in streamed["choices"][0]["message"]["content"]
 
 
 @pytest.mark.parametrize("mode", ["ok", "inline-missing-stream-boundary"])
