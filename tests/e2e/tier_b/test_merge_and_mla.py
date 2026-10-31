@@ -103,6 +103,45 @@ def test_merge_optional_lse_empty_batch_and_aliases(runtime):
     )
 
 
+@pytest.mark.cap89
+@pytest.mark.parametrize("dtype_name", ["float32", "float16", "bfloat16"])
+def test_mla_cache_skip_scale_and_legacy_default(runtime, dtype_name):
+    """Exercise the new FP8 specialization and preserve six-argument callers."""
+    torch = runtime
+    dtype = getattr(torch, dtype_name)
+    rank, rope = 512, 64
+    # Binary fractions keep the independent CPU FP8 oracle unambiguous.
+    rows = (
+        (torch.arange(6 * (rank + rope), device="cpu") % 65 - 32).float() / 16
+    ).reshape(6, rank + rope)
+    latent = rows[:, :rank].to(device="cuda", dtype=dtype).contiguous()
+    positional = rows[:, rank:].to(device="cuda", dtype=dtype).contiguous()
+    # Two graph-padding rows have no mapping and one mapped row is null.
+    slots = torch.tensor([2, 10, -1, 40], device="cuda", dtype=torch.int64)
+    scale = torch.tensor([0.25], device="cuda")
+    op = torch.ops._C_cache_ops.concat_and_cache_mla
+    outputs = {}
+    for mode in ("legacy", "scaled", "unscaled"):
+        cache = torch.full((2, 32, rank + rope), 0x5A, device="cuda", dtype=torch.uint8)
+        args = (latent, positional, cache, slots, "fp8", scale)
+        if mode == "legacy":
+            op(*args)
+        else:
+            op(*args, mode == "unscaled")
+        torch.cuda.synchronize()
+        outputs[mode] = cache.cpu()
+        expected = torch.full_like(outputs[mode], 0x5A)
+        divisor = 1.0 if mode == "unscaled" else 0.25
+        for token, slot in enumerate((2, 10, -1, 40)):
+            if slot >= 0:
+                expected.view(-1, rank + rope)[slot] = (
+                    (rows[token] / divisor).to(torch.float8_e4m3fn).view(torch.uint8)
+                )
+        torch.testing.assert_close(outputs[mode], expected, rtol=0, atol=0)
+    torch.testing.assert_close(outputs["legacy"], outputs["scaled"], rtol=0, atol=0)
+    assert not torch.equal(outputs["scaled"], outputs["unscaled"])
+
+
 def test_mla_empty_slot_mapping_does_not_launch_or_modify_inputs(runtime):
     torch = runtime
     q = torch.ones(3, 2, 64, device="cuda", dtype=torch.bfloat16)

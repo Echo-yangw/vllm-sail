@@ -1,0 +1,60 @@
+{
+  "deepseek-v4-community-tp8": {
+    "checkpoint": "checkpoints/LLM/deepseek-ai/v1.0/DeepSeek-V4-Flash-0731",
+    "serve_args": [
+      "--trust-remote-code", "--gpu-memory-utilization=0.8",
+      "--kv-cache-dtype", "fp8", "--block-size", "256",
+      "--tensor-parallel-size", "8", "--no-enable-flashinfer-autotune",
+      "--tokenizer-mode", "deepseek_v4", "--tool-call-parser", "deepseek_v4",
+      "--enable-auto-tool-choice", "--reasoning-parser", "deepseek_v4",
+      "--reasoning-config", "{\"reasoning_parser\":\"deepseek_v4\",\"reasoning_start_str\":\"\",\"reasoning_end_str\":\"\"}",
+      "--speculative-config", "{\"method\":\"dspark\",\"num_speculative_tokens\":7,\"draft_sample_method\":\"probabilistic\"}"
+    ]
+  },
+  "deepseek-v4-mxfp4-tp8": {
+    "checkpoint": "checkpoints/ppu_quantization/qlean-test/DeepSeek-V4-Flash-0731-mxfp4-fp8channel",
+    "serve_args": [
+      "--trust-remote-code", "--gpu-memory-utilization=0.85",
+      "--kv-cache-dtype", "fp8", "--block-size", "256",
+      "--tensor-parallel-size", "8", "--no-enable-flashinfer-autotune",
+      "--tokenizer-mode", "deepseek_v4", "--tool-call-parser", "deepseek_v4",
+      "--enable-auto-tool-choice", "--reasoning-parser", "deepseek_v4",
+      "--reasoning-config", "{\"reasoning_parser\":\"deepseek_v4\",\"reasoning_start_str\":\"\",\"reasoning_end_str\":\"\"}",
+      "--speculative-config", "{\"method\":\"dspark\",\"num_speculative_tokens\":7,\"draft_sample_method\":\"probabilistic\"}"
+    ]
+  },
+  "deepseek-v4-mxfp4-dp8-ep8-ll": {
+    "checkpoint": "checkpoints/ppu_quantization/qlean-test/DeepSeek-V4-Flash-0731-mxfp4-fp8channel",
+    "env": {
+      "VLLM_SAIL_PROCESS_GROUP_TIMEOUT_M": "30",
+      "VLLM_ENGINE_READY_TIMEOUT_S": "3600"
+    },
+    "serve_args": [
+      "--trust-remote-code", "--kv-cache-dtype", "fp8", "--block-size", "256",
+      "--max-num-batched-tokens", "1024", "--max-num-seqs", "128",
+      "--gpu-memory-utilization=0.9", "--all2all-backend", "deepep_low_latency",
+      "--enable-expert-parallel", "--data-parallel-size", "8",
+      "--compilation-config", "{\"cudagraph_mode\":\"FULL_DECODE_ONLY\",\"custom_ops\":[\"all\"]}",
+      "--tokenizer-mode", "deepseek_v4", "--tool-call-parser", "deepseek_v4",
+      "--enable-auto-tool-choice", "--reasoning-parser", "deepseek_v4",
+      "--reasoning-config", "{\"reasoning_parser\":\"deepseek_v4\",\"reasoning_start_str\":\"\",\"reasoning_end_str\":\"\"}",
+      "--speculative-config", "{\"method\":\"dspark\",\"num_speculative_tokens\":7,\"draft_sample_method\":\"probabilistic\"}"
+    ]
+  },
+  "glm5.2-mxfp4-tp8": {
+    "checkpoint": "checkpoints/LLM/zhipu/v5.2/GLM-5.2-MXFP4-FP8-fromBF16",
+    "serve_args": [
+      "--trust-remote-code", "--tensor-parallel-size", "8",
+      "--max-model-len", "auto"
+    ]
+  },
+  "minimax-m3-fp8-tp8": {
+    "checkpoint": "checkpoints/LLM/T-HEAD/m3/MiniMax-M3-Quant-W-FP8-PerChannel-A-FP8-PerToken",
+    "serve_args": [
+      "--trust-remote-code", "--tensor-parallel-size", "8",
+      "--block-size", "128", "--reasoning-parser", "minimax_m3",
+      "--tool-call-parser", "minimax_m3", "--enable-auto-tool-choice",
+      "--no-enable-prefix-caching", "--gpu-memory-utilization", "0.9"
+    ]
+  }
+}
