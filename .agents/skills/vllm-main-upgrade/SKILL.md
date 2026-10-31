@@ -48,6 +48,17 @@ and tracked/untracked cleanliness before and after source gates. Wait for any
 asynchronous log writer and propagate its failure before publishing a successful
 stage receipt; preserve each earlier executor version and attempt.
 
+Read commit identities from the live repositories when producing each source
+receipt, and bind the actual producer hash and required ignored inputs. A
+hardcoded expected SHA alone is not a live identity observation. Consumers of
+stage exit files must wait for a complete status line, or use an atomically
+published receipt; file existence alone can race the writer.
+
+An isolated CPU container can verify wheel bytes, schema parsing and native
+imports while its installed-vLLM tests still require driver metadata during
+collection. Preserve such environment failures and rerun the complete selector
+in the prepared device environment; do not fabricate NVML or add mode skips.
+
 Capture conditional aliases in both cold and preloaded consumer processes when the generated target set changes. Resolve the captured callable's actual provider, including inherited methods, compilation decorators and unavailable-backend fallbacks, before assigning a source fingerprint. Read the provider guidance in [acceptance.md](references/acceptance.md).
 
 Recheck release-branch API ownership at mandatory off-main endpoints; do not assume main and the release tag provide the same helper. Audit real-environment fixtures as well as production adapters: a bare-CPU or source-only pass can skip a fixture that imports the real provider. Exercise that provider in the compatible Torch environment, preserve a focused failing case and retain all behavioral assertions when adapting the fixture. At a release-range transition update patch declarations, coarse compatibility policy, tests and maintained user guides together. The full-SHA pin remains authoritative.

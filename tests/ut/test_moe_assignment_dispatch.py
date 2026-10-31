@@ -206,6 +206,8 @@ def check_apply(modules, resident, router, source_root=None, copied=True):
         per_act_token_quant=False,
         quantization_emulation=False,
         _lora_context=None,
+        # This fixture exercises legacy host assignment, with no tail consumer.
+        _uses_post_gemm2_hook=lambda tokens: False,
         moe_problem_size=lambda *a: (32, 2, 8, 4, 2),
         adjust_N_for_activation=lambda n, a: n // 2,
         activation_config=NS(clamp_limit=None),
