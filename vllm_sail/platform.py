@@ -120,6 +120,11 @@ class PPUPlatform(NvmlCudaPlatform):
         return True
 
     @classmethod
+    def get_hisparse_backend_cls(cls) -> str | None:
+        """HiSparse compute kernels are excluded from the PPU native corpus."""
+        return None
+
+    @classmethod
     def import_kernels(cls) -> None:
         """Load PPU's own compiled kernels, then let upstream try its own.
 

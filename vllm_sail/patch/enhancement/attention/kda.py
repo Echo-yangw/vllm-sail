@@ -934,6 +934,17 @@ def _init(
             self.model_config.dtype,
         )
 
+    # Profiling skips attention, so reserve the shared runtime buffers before
+    # the KV cache is sized. PLA's vendor workspace can be empty while its
+    # output and recurrent-state buffers still need this reservation.
+    if is_workspace_manager_initialized():
+        if self._flashkda_buffer_specs is not None:
+            current_workspace_manager().get_simultaneous(*self._flashkda_buffer_specs)
+        elif self._flashinfer_kda_output_spec is not None:
+            current_workspace_manager().get_simultaneous(
+                self._flashinfer_kda_output_spec
+            )
+
     self.o_norm = FusedRMSNormGated(self.head_dim, activation="sigmoid")
     decode_norm_weight = None
     if decode_conv1d_weight is not None:

@@ -142,6 +142,92 @@ def test_mla_cache_skip_scale_and_legacy_default(runtime, dtype_name):
     assert not torch.equal(outputs["scaled"], outputs["unscaled"])
 
 
+@pytest.mark.cap89
+@pytest.mark.parametrize("dtype_name", ["float16", "bfloat16"])
+@pytest.mark.parametrize("entry_size", [528, 656])
+@pytest.mark.parametrize("padded", [False, True])
+@pytest.mark.parametrize("block_size", [64, 256])
+def test_mla_nope_compact_rows_sentinels_and_graph(
+    runtime, dtype_name, entry_size, padded, block_size
+):
+    """Check packed FP8/scales, page strides and changed-input graph replay."""
+    torch = runtime
+    dtype = getattr(torch, dtype_name)
+    rows = ((torch.arange(6 * 512) % 33 - 16).float() / 16).reshape(6, 512)
+    latent = rows.to(device="cuda", dtype=dtype)
+    positional = torch.empty(6, 0, dtype=dtype, device="cuda")
+    slots = torch.tensor(
+        [block_size - 1, block_size, -1], dtype=torch.int64, device="cuda"
+    )
+    storage = torch.full(
+        (2, block_size + int(padded), entry_size + 128 * int(padded)),
+        0x5A,
+        dtype=torch.uint8,
+        device="cuda",
+    )
+    cache = storage[:, :block_size, :entry_size]
+    scale = torch.ones(1, device="cuda")
+
+    def run():
+        torch.ops._C_cache_ops.concat_and_cache_mla(
+            latent, positional, cache, slots, "fp8_ds_mla", scale
+        )
+
+    def check():
+        expected = torch.full(storage.shape, 0x5A, dtype=torch.uint8)
+        data = latent.cpu().float()
+        for token, slot in enumerate(slots.cpu().tolist()):
+            if slot < 0:
+                continue
+            row = expected[slot // block_size, slot % block_size]
+            scales = []
+            for start in range(0, 512, 128):
+                values = data[token, start : start + 128]
+                raw = (values.abs().max() / 448).clamp_min(1e-4)
+                tile_scale = torch.exp2(torch.ceil(torch.log2(raw)))
+                scales.append(tile_scale)
+                row[start : start + 128] = (
+                    (values / tile_scale).to(torch.float8_e4m3fn).view(torch.uint8)
+                )
+            row[512:528] = torch.stack(scales).view(torch.uint8)
+            row[528:entry_size] = 0
+        torch.testing.assert_close(storage.cpu(), expected, rtol=0, atol=0)
+
+    run()
+    torch.cuda.synchronize()
+    check()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        run()
+    latent.mul_(0.5)
+    slots.copy_(torch.tensor([1, block_size + 2, -1], device="cuda"))
+    storage.fill_(0x5A)
+    graph.replay()
+    torch.cuda.synchronize()
+    check()
+    if entry_size == 528:
+        before = storage.clone()
+        with pytest.raises(RuntimeError, match="528-byte rows with pe_dim == 0"):
+            torch.ops._C_cache_ops.concat_and_cache_mla(
+                latent,
+                torch.zeros(6, 64, dtype=dtype, device="cuda"),
+                cache,
+                slots,
+                "fp8_ds_mla",
+                scale,
+            )
+        with pytest.raises(RuntimeError, match="at least 656 bytes"):
+            torch.ops._C_cache_ops.cp_gather_and_upconvert_fp8_kv_cache(
+                cache,
+                torch.empty(1, 576, dtype=torch.bfloat16, device="cuda"),
+                torch.zeros(1, 1, dtype=torch.int32, device="cuda"),
+                torch.zeros(1, dtype=torch.int32, device="cuda"),
+                1,
+                None,
+            )
+        torch.testing.assert_close(storage, before, rtol=0, atol=0)
+
+
 def test_mla_empty_slot_mapping_does_not_launch_or_modify_inputs(runtime):
     torch = runtime
     q = torch.ones(3, 2, 64, device="cuda", dtype=torch.bfloat16)

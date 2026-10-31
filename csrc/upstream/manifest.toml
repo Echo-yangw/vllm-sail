@@ -18,7 +18,7 @@ schema = 1
 
 # The exact upstream vLLM tag the corpus is translated from. Bumping this means
 # re-running tools/port_upstream_kernels.py and reviewing the diff.
-upstream_ref = "43111fd1f0c3135ff671e25e2e85238aa05743d0"
+upstream_ref = "ee9ba37199338cf31306a2ec27ec9afa41efc09e"
 
 # Compiled tiers, in the order CMake receives them. `x` must never appear here.
 # Must stay above [tiers]: a bare key after a table header belongs to that table.
@@ -84,6 +84,12 @@ _moe_C_stable_libtorch = "_upstream_moe_C"
 
 [overlay.replace_text."csrc/cache_kernels_fused.cu"]
 "  dim3 grid(num_tokens, 1, 1);" = "  if (num_tokens == 0) return;  // Empty graph slot mappings need no launch.\n  dim3 grid(num_tokens, 1, 1);"
+
+# KV dispatch represents FP16 as uint16_t bits. Decode those bits before the
+# NoPE maximum reduction; a numeric integer cast otherwise yields wrong scales.
+# to_float also preserves the BF16 overload used by the same kernel.
+[overlay.replace_text."csrc/cache_kernels.cu"]
+"  float max_abs = fmaxf(fmaxf(fmaxf(fabsf(vals[0]), fabsf(vals[1])),\n                              fmaxf(fabsf(vals[2]), fabsf(vals[3]))),\n                        fmaxf(fmaxf(fabsf(vals[4]), fabsf(vals[5])),\n                              fmaxf(fabsf(vals[6]), fabsf(vals[7]))));" = "  float max_abs = 0.0f;\n#pragma unroll\n  for (int i = 0; i < 8; ++i) {\n    max_abs = fmaxf(max_abs, fabsf(to_float(vals[i])));\n  }"
 
 # Keep INT8 round-to-nearest-even and saturation without an inline PTX cast.
 [overlay.replace_text."csrc/quantization/fused_kernels/quant_conversions.cuh"]
