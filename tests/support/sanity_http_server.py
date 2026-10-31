@@ -47,9 +47,11 @@ def main() -> None:
                 return
             finish = "length" if args.mode == "truncated" else "stop"
             content = "43" if args.mode == "wrong" else "42"
-            if args.mode == "inline-think":
+            if args.mode in ("inline-think", "inline-missing-stream-boundary"):
                 content = "Compute 17 + 25 = 42.</think>42"
             if body.get("stream"):
+                if args.mode == "inline-missing-stream-boundary":
+                    content = "42"
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
                 self.end_headers()

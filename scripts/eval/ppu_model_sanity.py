@@ -101,9 +101,9 @@ def validate_answer(
     content = message.get("content")
     if message.get("tool_calls") or not isinstance(content, str):
         raise ValueError("expected a final textual answer")
-    if answer_format == "inline_think" and "</think>" in content:
+    if answer_format == "inline_think":
         if content.count("</think>") != 1:
-            raise ValueError("ambiguous inline reasoning boundary")
+            raise ValueError("expected exactly one inline reasoning boundary")
         reasoning, content = content.split("</think>")
         openings = reasoning.count("<think>")
         if openings > 1 or (

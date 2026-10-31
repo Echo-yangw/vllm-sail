@@ -55,7 +55,6 @@ def test_accepts_complete_correct_final_answer():
         "We compute the sum.</think>42",
         "<think>We compute the sum.</think>42",
         "</think> 42\n",
-        "42",
     ],
 )
 def test_inline_reasoning_uses_only_the_complete_final_answer(content):
@@ -68,6 +67,7 @@ def test_inline_reasoning_uses_only_the_complete_final_answer(content):
 @pytest.mark.parametrize(
     "content",
     [
+        "42",
         "The answer is 42.</think>43",
         "The answer is 42.</think>",
         "<think>42",
@@ -196,6 +196,19 @@ def test_glm_inline_reasoning_http_and_split_sse_round_trip(launch_external_doub
         == stream["choices"][0]["message"]["content"]
     )
     assert "</think>" in ordinary["choices"][0]["message"]["content"]
+
+
+@pytest.mark.parametrize("mode", ["ok", "inline-missing-stream-boundary"])
+def test_glm_requires_final_boundary_in_ordinary_and_streamed_answers(
+    launch_external_double, mode
+):
+    result, output = launch_external_double(mode=mode, profile_key="glm5.2-mxfp4-tp8")
+    assert result["status"] == result["state"] == "failed"
+    assert "boundary" in result["error"]
+    assert result["cleanup"]["group_absent"]
+    if mode == "inline-missing-stream-boundary":
+        assert result["answer"] == "42"
+        assert (output / "stream.json").is_file()
 
 
 @pytest.fixture
