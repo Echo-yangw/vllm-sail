@@ -63,6 +63,7 @@ def vllm_config():
         },
     )
     return types.SimpleNamespace(
+        kernel_config=types.SimpleNamespace(moe_backend="auto"),
         model_config=types.SimpleNamespace(hf_text_config=hf_config),
         scheduler_config=types.SimpleNamespace(
             max_num_batched_tokens=MAX_NUM_BATCHED_TOKENS

@@ -57,7 +57,7 @@ def check_fly(path, window, incompatible=None, upstream=None):
     sampler = function(path, "rejection_sample", namespace)
     args = (
         Logits(13, 8193),
-        Tensor(2, 7, 8000),
+        NS(values=Tensor(2, 7, 8000), row_mapping=None),
         Tensor(13),
         Tensor(3),
         Tensor(13),

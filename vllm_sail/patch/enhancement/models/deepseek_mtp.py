@@ -17,6 +17,7 @@ import typing
 from collections.abc import Callable, Iterable
 
 import torch
+from vllm._aiter_ops import rocm_aiter_ops
 from vllm.model_executor.layers.fused_moe import (
     fused_moe_make_expert_params_mapping,
 )
@@ -30,6 +31,7 @@ from vllm.model_executor.model_loader.weight_utils import (
 from vllm.model_executor.models.deepseek_mtp import DeepSeekMTP
 from vllm.model_executor.models.deepseek_v2 import _try_load_fp8_indexer_wk
 from vllm.model_executor.models.utils import (
+    extract_layer_index,
     get_pp_missing_layer_names,
     get_spec_layer_idx_from_weight_name,
 )
@@ -99,17 +101,14 @@ def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         stacked_params_mapping.extend(indexer_fused_mapping)
     # PPU MODIFICATION: end
 
+    fused_shared_expert_layers = self.fused_shared_expert_layers
     expert_params_mapping = fused_moe_make_expert_params_mapping(
         self,
         ckpt_gate_proj_name="gate_proj",
         ckpt_down_proj_name="down_proj",
         ckpt_up_proj_name="up_proj",
         num_experts=self.config.n_routed_experts
-        + (
-            self.config.n_shared_experts
-            if self.is_fused_shared_expert_enabled
-            else 0
-        ),
+        + (self.config.n_shared_experts if fused_shared_expert_layers else 0),
     )
 
     pp_missing_layer_names = get_pp_missing_layer_names(self)
@@ -135,7 +134,9 @@ def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
                 loaded_params.add(name)
             continue
         is_fusion_moe_shared_experts_layer = (
-            self.is_fused_shared_expert_enabled and ("mlp.shared_experts" in name)
+            "mlp.shared_experts" in name
+            and bool(rocm_aiter_ops.is_fusion_moe_shared_experts_enabled())
+            and extract_layer_index(name) in fused_shared_expert_layers
         )
         name = self._rewrite_spec_layer_name(spec_layer, name)
 

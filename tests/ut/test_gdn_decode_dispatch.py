@@ -77,6 +77,8 @@ def gdn_provider(modules, monkeypatch, upstream_source_root):
             self.head_k_dim = self.head_v_dim = 128
             self.num_k_heads, self.num_v_heads = 2, 4
             self.gqa_interleaved_layout = False
+            self._ba_stream = None
+            self._fused_gdn_gated_rms_norm = None
             self.norm = NS(activation="silu")
             self.state_dtype = vllm_config.state_dtype
             self.speculative_config = vllm_config.speculative_config
@@ -275,6 +277,7 @@ def test_stub_falls_through_real_upstream_forward_to_normal_core(
         qwen_gdn_attention_core_fused_norm_packed=fused,
     )
     f.torch.zeros = lambda *a, **kw: Tensor()
+    f.torch.empty = lambda *a, **kw: Tensor()
     layer.in_proj_qkvz = layer.in_proj_ba = lambda _: (Tensor(), None)
     layer.split_ba = lambda _: (Tensor(), Tensor())
     layer._output_projection = lambda *a: "norm + output"

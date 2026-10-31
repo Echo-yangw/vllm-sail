@@ -6,7 +6,7 @@
 # tiers. vllm_sail/native/stubs.py registers each one so a call fails
 # with a named NotImplementedError instead of an AttributeError, and so
 # capability probes answer False instead of raising.
-# Upstream vLLM ee9ba37199338cf31306a2ec27ec9afa41efc09e; compiled tiers a.
+# Upstream vLLM 4440f0e2632abacbefd7690338b9eea91055034b; compiled tiers a.
 
 [[op]]
 namespace = "_C_custom_ar"
@@ -268,6 +268,14 @@ reason = "not declared in csrc/upstream/manifest.toml"
 namespace = "_C"
 name = "fused_kda_prologue"
 schema = "fused_kda_prologue(Tensor q, Tensor k, Tensor v, Tensor raw_g, Tensor raw_beta, Tensor A_log, Tensor dt_bias, Tensor! qg, Tensor! w, Tensor! u, Tensor! kg_t, Tensor! aqk, Tensor! decay, Tensor cu_seqlens, Tensor chunk_indices, Tensor? conv_weight, Tensor(e!)? conv_state, Tensor? conv_state_indices, Tensor? conv_has_initial_state, float scale, float lower_bound) -> ()"
+kind = "compute"
+tier = "unclaimed"
+reason = "not declared in csrc/upstream/manifest.toml"
+
+[[op]]
+namespace = "_C"
+name = "fused_minimax_m3_dspark_context_kv"
+schema = "fused_minimax_m3_dspark_context_kv(Tensor all_kv, Tensor k_norm_weight, Tensor cos_sin_cache, Tensor positions, Tensor slot_mapping, Tensor! kv_cache, Tensor cache_offsets, Tensor k_scale, Tensor scale_offsets, int rotary_dim, float eps, str kv_cache_dtype) -> ()"
 kind = "compute"
 tier = "unclaimed"
 reason = "not declared in csrc/upstream/manifest.toml"

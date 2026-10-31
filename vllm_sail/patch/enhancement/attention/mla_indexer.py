@@ -267,6 +267,10 @@ def _builder_init_body(self, *args, block_table_width: int, **kwargs) -> None:
         if self.vllm_config.speculative_config
         else 0
     )
+    self.use_adaptive_verification = bool(
+        self.vllm_config.speculative_config
+        and self.vllm_config.speculative_config.enable_adaptive_verification
+    )
     self.indexer_uses_fp4 = dsa_indexer_uses_fp4(self.vllm_config)
     # PPU MODIFICATION: begin
     self.indexer_n_head = (
@@ -349,8 +353,12 @@ def _builder_init_body(self, *args, block_table_width: int, **kwargs) -> None:
     self.dcp_rank_tensor = torch.tensor(
         self.dcp_rank, dtype=torch.int32, device=self.device
     )
+    max_decode_tokens = min(
+        scheduler_config.max_num_seqs * next_n,
+        scheduler_config.max_num_batched_tokens,
+    )
     self.expanded_block_table_buffer = torch.zeros(
-        (scheduler_config.max_num_batched_tokens, block_table_width),
+        (max_decode_tokens, block_table_width),
         dtype=torch.int32,
         device=self.device,
     )
@@ -619,6 +627,7 @@ def _build_body(
 
     decode_metadata = None
     if num_decodes > 0:
+        assert num_decode_tokens <= self.expanded_block_table_buffer.shape[0]
         if not self.supports_varlen:
             torch.diff(
                 common_attn_metadata.query_start_loc[: num_decodes + 1],
@@ -650,6 +659,11 @@ def _build_body(
         min_decode_len = int(decode_lens_cpu.min().item())
         write_is_uniform = min_decode_len == max_decode_len
         next_n = 1 + self.num_speculative_tokens
+        if self.use_adaptive_verification:
+            # Graph capture must reserve the largest runtime draft budget,
+            # irrespective of the capture-time dummy request partition.
+            max_decode_len = next_n
+            write_is_uniform = False
         # The kernel sees max_decode_len Q rows, not the configured next_n,
         # so legality is per-step: on SM90 a uniformly 3-deep batch has no
         # native kernel. max_decode_len <= 1 always has one.
