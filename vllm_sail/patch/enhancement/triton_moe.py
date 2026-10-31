@@ -873,6 +873,10 @@ def _has_native_wna16():
 
 
 def should_moe_wna16_use_cuda(num_valid_tokens, group_size, num_experts, bit):
+    from vllm import envs
+
+    if envs.VLLM_BATCH_INVARIANT:
+        return False
     from vllm_sail import envs as ppu_envs
 
     if ppu_envs.VLLM_SAIL_DISABLE_MOE_WNA16_CUDA:

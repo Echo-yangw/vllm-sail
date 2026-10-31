@@ -31,6 +31,7 @@ original exactly; do not replace the baseline merely because the new run differs
 Do not advance the formal pin until its predecessor is accepted. Independent investigation or private drafts may proceed while hardware work runs; label their evidence accordingly.
 
 1. Inventory changed copied bodies, delegated providers, signatures, native inputs and separately cached by-value consumers. Review real source bodies; an unchanged signature or successful import does not prove compatibility.
+   Compare complete copied bodies with the exact upstream functions, retaining only the documented PPU differences. An upstream-delta-only review can miss older drift in weight ownership, resolved model flags and ignored-value handling. Add public-behavior regressions for any such differences before adopting fingerprints.
 2. Prefer registration and platform interfaces. Preserve PPU modification regions when refreshing copied upstream bodies. Regenerate native outputs, patch inventory, interface locks and reviewed drift baselines with maintained tools.
 3. Add behavioral regressions at changed call boundaries using real upstream helpers where feasible. If an existing fixture becomes stale, retain its semantic assertions and preserve the failing evidence.
    Run CPU/source UT before an expensive build, then installed UT and baseline sanity before the other selected sanity profiles, sequentially on the agreed devices. Use one ordinary request for a fast development probe and `--with-stream` for checkpoint qualification. A failed baseline blocks checkpoint advancement; preserve the attempt and diagnose it without silently reducing context, disabling graphs/speculation or changing parallelism. Sanity success is a necessary early gate and does not replace device tests, model-path evidence, answer review or composite acceptance.
@@ -42,6 +43,17 @@ Do not advance the formal pin until its predecessor is accepted. Independent inv
    doubles, parent-package search paths and missing-module exception identities.
 5. Review captured runtime provider bodies before updating fingerprints. After adopting real generated metadata, regenerate the interface lock and run the complete WIP CPU/source/generation gates again. Assert every patch declaration agrees with the supported release range. Then freeze and independently review the complete tree, save a clean signed checkpoint commit and rerun its CPU/source/generation gates. Build its clean SAIL wheel and perform all gates in [acceptance.md](references/acceptance.md).
 6. Accept only after the composite evidence check succeeds. Reverify the accepted raw evidence with [verify_checkpoint.py](scripts/verify_checkpoint.py) and a frozen external schema-2 policy; read [evidence-policy.md](references/evidence-policy.md) for its input contract. Collect model commit/wheel identities at execution time and the complete real-Torch schema parsing receipt before final postproof. Preserve failed attempts and supplements separately. Record acceptance before preparing the next checkpoint.
+
+Freeze collected test IDs separately from XML totals: module-level collection
+skips may appear only in XML. Compare the full predecessor ID set plus declared
+new cases, with no deselection for full CPU/source gates. Put lint and build
+caches outside frozen qualification source trees and verify ignored inputs too.
+
+For Python-only changes at the same upstream pin, the maintained native-reuse
+entry may reuse verified native/Rust artifacts after checking the exact upstream,
+complete native fingerprint, build settings and fixed SDK/Torch. Repack the new
+Python source and rerun its gates. Preserve the donor's official full source-build
+provenance; a new upstream pin still requires its own Rust source compilation.
 
 Reserve each attempt directory atomically. Check both source trees' exact HEAD
 and tracked/untracked cleanliness before and after source gates. Wait for any
