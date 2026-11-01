@@ -11,7 +11,7 @@
 schema = 1
 vllm_version_range = ">=0.32.0,<0.33.0"
 key_interface_count = 10
-target_count = 263
+target_count = 264
 
 [[key_interface]]
 symbol = "vllm.platforms.interface.PlatformEnum"
@@ -1680,6 +1680,14 @@ module = "vllm/models/minimax_m3/common/ops/dspark_context_kv.py"
 symbol = "DSparkContextKVWriter.supported"
 present = true
 fingerprint = "sha256:94b43f40c38e7bdd104ebcab56b0f56efd6cc418095b76a4a90dd8f0afecb1f0"
+
+[[patch_target]]
+name = "vllm.models.minimax_m3.nvidia.model.MiniMaxM3MLP.__init__"
+kind = "class"
+module = "vllm/models/minimax_m3/nvidia/model.py"
+symbol = "MiniMaxM3MLP.__init__"
+present = true
+fingerprint = "sha256:0f6bc009d7bda82f1c1d3263fce24edd236ea1628485253e85361b1e3fce2eff"
 
 [[patch_target]]
 name = "vllm.models.minimax_m3.nvidia.model.MiniMaxM3Model._init_fused_moe_finalize"

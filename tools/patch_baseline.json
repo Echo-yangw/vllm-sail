@@ -200,6 +200,7 @@
   "vllm.models.kimi_k3.nvidia.latent_moe_runner.LatentMoERunner._select_tail_tier": "a1e3f86b22ba9bb6b1cf34c95664590cff4b5cb3d5589a8e864128ba8cd20537",
   "vllm.models.kimi_k3.nvidia.model.KimiRoutedOutputTransform.forward": "c1d277f467086512ce836fc2f2b4a6cec9967c61921e2e5fb5b37c4e5099175c",
   "vllm.models.minimax_m3.common.ops.dspark_context_kv.DSparkContextKVWriter.supported": "dc39b42749a12cfb5977833090b492c379d3cdb0b58ab3f80d44edf64f051524",
+  "vllm.models.minimax_m3.nvidia.model.MiniMaxM3MLP.__init__": "6894b83c1fd264c5a2fa5058650616f9058dc6dbda1147423be3efd9fc4299a4",
   "vllm.models.minimax_m3.nvidia.model.MiniMaxM3Model._init_fused_moe_finalize": "59affa32f3018843f24119607d0b55df2676dca93ff8bbf00eeb4b9d93c1fff7",
   "vllm.platforms.interface.Platform.is_ppu": "additive",
   "vllm.platforms.interface.Platform.is_sleep_mode_available": "bd559732376e83511388bc11a83310813a26be1d40b28c13f11ddd0e12d98085",

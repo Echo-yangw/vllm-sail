@@ -232,6 +232,7 @@ _EXPECTED_TARGETS = {
     "vllm.models.kimi_k3.nvidia.model.KimiRoutedOutputTransform.forward",
     "vllm.model_executor.models.llama4.Llama4MoE.custom_routing_function",
     "vllm.models.minimax_m3.nvidia.model.MiniMaxM3Model._init_fused_moe_finalize",
+    "vllm.models.minimax_m3.nvidia.model.MiniMaxM3MLP.__init__",
     "vllm.model_executor.models.qwen3_moe.Qwen3MoeSparseMoeBlock.__init__",
     "vllm.model_executor.models.qwen3_moe.Qwen3MoeDecoderLayer.__init__",
     "vllm.model_executor.models.qwen3_moe.Qwen3MoeModel.__init__",

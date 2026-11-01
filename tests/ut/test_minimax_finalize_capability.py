@@ -23,7 +23,11 @@ def test_registered_finalize_retains_ordinary_ppu_path(modules, ppu):
             calls.append((self, config))
             return result
 
-    modules("vllm.models.minimax_m3.nvidia.model", MiniMaxM3Model=Model)
+    modules(
+        "vllm.models.minimax_m3.nvidia.model",
+        MiniMaxM3Model=Model,
+        MiniMaxM3MLP=type("MLP", (), {}),
+    )
     modules(
         "vllm.platforms", current_platform=NS(is_ppu=lambda: ppu, is_cuda=lambda: True)
     )

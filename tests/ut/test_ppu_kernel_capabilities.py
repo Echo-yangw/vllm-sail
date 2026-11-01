@@ -100,6 +100,12 @@ def modules(monkeypatch, patch_utils_module):
         "vllm_sail.model_executor.warmup.ppu_kernel_warmup",
         kernel_warmup=warmup_body.kernel_warmup,
     )
+    spec = importlib.util.spec_from_file_location(
+        "_ppu_minimax_mlp_body", ROOT / "vllm_sail/models/minimax_m3_mlp.py"
+    )
+    mlp_body = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mlp_body)
+    add("vllm_sail.models.minimax_m3_mlp", init_mlp=mlp_body.init_mlp)
     return add
 
 
