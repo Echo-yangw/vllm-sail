@@ -24,6 +24,10 @@ Every required receipt binds the same clean SAIL commit, exact upstream SHA and 
 
 Run every applicable device E2E test in the agreed profile. Hardware skips are not runtime evidence. Expected failures must be agreed for that environment and freshly reproduced at each pin with raw causes retained. Bind causes to the exact commits and device XML hash. Partition the actual excluded case IDs into disjoint expected-failure and hardware-inapplicable sets; matching totals alone are insufficient. Unexpected failures block acceptance.
 
+For a focused regression gate, compare the actual XML case identities with the
+frozen selection and reject unexpected skips, failures and errors. A zero pytest
+exit can also mean that every selected regression was skipped.
+
 For every agreed model retain exact invocation/checkpoint/versions, readiness and elapsed timings; every correct complete final answer for the policy's request indices and one SSE answer with natural finish; positive configured quantization/parallel/attention/graph/speculation paths; generation/speculation metrics, memory, capture completion and error logs; owned handles, cleanup result and final absence of live owned services. Record commit and wheel identities in the raw invocation/result, complete-answer receipt, manual audit and per-model postproof. Capture these identities during the run, rather than labeling an old model directory from the final summary.
 
 HTTP success, runner status and keyword matches alone do not qualify answers. Review the complete answers against the prompts. Preserve truncated attempts and supplement affected cases within the authorized protocol; do not silently change service/model settings. Name the qualifying receipt for each case. Preserve shutdown warnings rather than calling warningful shutdown entirely clean.
@@ -33,6 +37,11 @@ Wait when other tasks occupy devices unless the human explicitly authorizes reso
 ## Controllers and acceptance
 
 Publish host success only after its stage receipt is durable. Container startup, missing receipts and receipt-write failures must propagate. Exercise slow/failing writes and downstream failure paths with local fixtures; synthetic receipts are not runtime proof.
+
+Dispatch a dependent stage only after its prerequisite runtime directory and
+successful preparation receipt exist. An asynchronous executor's successful
+launch does not establish that the child started or completed; retain failed
+dispatches separately when no child receipt was created.
 
 The final verifier requires CPU/source/generation reviews, installed UT, device results/exclusions, every model's reviewed receipt, complete installed maps, native/Rust provenance, stack invariants and owned cleanup. Exercise its complete late path and missing/tampered evidence cases. Write acceptance only after it passes, preserving earlier records.
 

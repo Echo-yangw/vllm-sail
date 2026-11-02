@@ -35,7 +35,9 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import io
 import sys
+import tokenize
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -224,15 +226,39 @@ def resolve_symbol(root: Path, dotted: str) -> ResolvedSymbol:
 # ---------------------------------------------------------------------------
 # Signature fingerprint
 # ---------------------------------------------------------------------------
+def _unparse(node: ast.AST) -> str:
+    """Normalize Python 3.10's extra space in zero-argument lambdas."""
+    text = ast.unparse(node)
+    edits: dict[int, list[tuple[int, int]]] = {}
+    previous = None
+    for current in tokenize.generate_tokens(io.StringIO(text).readline):
+        if (
+            previous is not None
+            and previous.type == tokenize.NAME
+            and previous.string == "lambda"
+            and current.string == ":"
+            and previous.end[0] == current.start[0]
+        ):
+            edits.setdefault(current.start[0] - 1, []).append(
+                (previous.end[1], current.start[1])
+            )
+        previous = current
+    lines = text.splitlines(keepends=True)
+    for line, spans in edits.items():
+        for start, end in reversed(spans):
+            lines[line] = lines[line][:start] + lines[line][end:]
+    return "".join(lines)
+
+
 def _function_signature(node: ast.AST) -> str:
     """Normalized ``lambda``-style signature text plus return annotation."""
     assert isinstance(node, FUNC_NODES)
     lam = ast.Lambda(args=node.args, body=ast.Constant(value=None))
     ast.fix_missing_locations(lam)
-    text = ast.unparse(lam)
+    text = _unparse(lam)
     returns = getattr(node, "returns", None)
     if returns is not None:
-        text += " -> " + ast.unparse(returns)
+        text += " -> " + _unparse(returns)
     return text
 
 
@@ -249,16 +275,16 @@ def signature_text(node: ast.AST | None) -> str:
     if isinstance(node, FUNC_NODES):
         return _function_signature(node)
     if isinstance(node, ast.ClassDef):
-        bases = ",".join(ast.unparse(base) for base in node.bases)
-        keywords = ",".join(f"{kw.arg}={ast.unparse(kw.value)}" for kw in node.keywords)
+        bases = ",".join(_unparse(base) for base in node.bases)
+        keywords = ",".join(f"{kw.arg}={_unparse(kw.value)}" for kw in node.keywords)
         members = []
         for name, member in sorted(_names_in_body(node.body).items()):
             if isinstance(member, FUNC_NODES):
                 members.append(f"{name}{_function_signature(member)}")
             else:
-                members.append(f"{name}={ast.unparse(member)}")
+                members.append(f"{name}={_unparse(member)}")
         return f"class({bases}|{keywords}){{" + ";".join(members) + "}"
-    return ast.unparse(node)
+    return _unparse(node)
 
 
 def fingerprint(node: ast.AST | None) -> str:
