@@ -81,7 +81,7 @@ tests do not establish device correctness or full-model support.
 | DeepSeek V4 | Model, MTP and DSpark registrations, with PPU attention, routing and cache paths |
 | MiniMax M3 | Optional model registrations, quantization mapping and native attention-related operations |
 | Qwen hybrid models | GDN attention and selected quantization and speculative-decoding adaptations |
-| Kimi K3 | KDA attention and native MLA/cache operations |
+| Kimi K3 | KDA attention, native MLA/cache operations, and dense EAGLE3/DSpark drafts decoding on TRITON_MLA |
 | Mamba / Jamba | HGGC selective-scan source integration |
 
 Model registration and kernel availability are separate checks. Record the exact

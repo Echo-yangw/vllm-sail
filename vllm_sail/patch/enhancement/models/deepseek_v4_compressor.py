@@ -2,7 +2,15 @@
 # ruff: noqa: F821
 # Copied bodies resolve globals in their upstream module through bind_body.
 # SPDX-License-Identifier: Apache-2.0
-"""Keep DeepSeek V4 compression on Triton on PPU (both architectures)."""
+"""Keep DeepSeek V4 compression on Triton on PPU (both architectures).
+
+The tracked provider factors compress -> norm -> RoPE -> store out of
+``forward`` into ``_compress_norm_rope_store``, and both that method and
+``__init__`` select the head-512 CuTeDSL kernels on
+``current_platform.is_cuda()`` alone, which is true on PPU. The seam is probed
+instead of the version string because a git build reports a version that
+cannot prove its source shape.
+"""
 
 from __future__ import annotations
 
@@ -270,17 +278,23 @@ def _compress_norm_rope_store(
     )
 
 
-patch(
-    "vllm.models.deepseek_v4.compressor",
-    "DeepseekCompressor._compress_norm_rope_store",
-    reason=(
-        "The compression helper selects head-512 CuTeDSL by CUDA identity; "
-        "PPU requires its Triton implementation. The common attention and "
-        "indexer constructors do not share a compressor factory hook."
-    ),
-    affected_versions=">=0.32.0,<0.33.0",
-    remove_when="The compression helper selects kernels through platform capabilities.",
-)(bind_body(_compress_norm_rope_store, _compressor))
+# The tracked provider factors the step out of ``forward``, which is the only
+# seam that redirects it. A provider that inlines it again has no seam, so the
+# redirect is skipped rather than failing the import.
+if hasattr(_compressor.DeepseekCompressor, "_compress_norm_rope_store"):
+    patch(
+        "vllm.models.deepseek_v4.compressor",
+        "DeepseekCompressor._compress_norm_rope_store",
+        reason=(
+            "The compression helper selects head-512 CuTeDSL by CUDA identity; "
+            "PPU requires its Triton implementation. The common attention and "
+            "indexer constructors do not share a compressor factory hook."
+        ),
+        affected_versions=">=0.32.0,<0.33.0",
+        remove_when=(
+            "The compression helper selects kernels through platform capabilities."
+        ),
+    )(bind_body(_compress_norm_rope_store, _compressor))
 
 
 patch(
