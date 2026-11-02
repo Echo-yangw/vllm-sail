@@ -608,24 +608,36 @@ def _build_body(
             # Skip when total_seq_lens is 0 (i.e., no compressed token).
             if metadata is not None:
                 chunks.append(metadata)
+        # PPU MODIFICATION: begin
+        # TP prefill row sharding only exists in upstream versions that ship
+        # both helpers plus the matching prefill-metadata field. bind_body
+        # installs this body with the target module's namespace as its
+        # globals, so probing globals() follows the installed vLLM instead of
+        # the version these bodies were copied from: an older upstream (e.g.
+        # the PPU fork) simply skips row sharding.
+        tp_row_sharding_supported = globals().get("tp_prefill_row_sharding_supported")
         row_shard_sizes = None
-        if tp_prefill_row_sharding_supported(
+        if tp_row_sharding_supported is not None and tp_row_sharding_supported(
             self.vllm_config, self.dcp_world_size, self.use_pcp, self.tp_size
         ):
-            row_shard_sizes = balanced_prefill_row_shard(
+            row_shard_sizes = globals()["balanced_prefill_row_shard"](
                 seq_lens_cpu[num_decodes:],
                 prefill_query_lens_cpu,
                 self.compress_ratio,
                 self.tp_size,
                 self.vllm_config.attention_config.indexer_tp_shard_min_rows,
             )
+        # PPU MODIFICATION: end
         prefill_metadata = DeepseekV32IndexerPrefillMetadata(
             chunks,
             max_prefill_seq_len=(
                 int(seq_lens_cpu[num_decodes:].max().item()) if num_prefills > 0 else 0
             ),
-            row_shard_sizes=row_shard_sizes,
         )
+        if row_shard_sizes is not None:
+            # PPU MODIFICATION: only attach the field when upstream prefill
+            # metadata carries it (i.e. upstream row sharding is present).
+            prefill_metadata.row_shard_sizes = row_shard_sizes
 
     decode_metadata = None
     if num_decodes > 0:
