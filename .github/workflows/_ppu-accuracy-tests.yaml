@@ -86,10 +86,13 @@ jobs:
         run: python3 scripts/ci/ppu_e2e_select.py "${MODELS}" >> "$GITHUB_OUTPUT"
 
   accuracy:
-    name: Accuracy ${{ matrix.model.model_key }}
+    name: Accuracy ${{ matrix.model.case_id }}
     needs: prepare
     runs-on: 8-ppu-m890p
-    timeout-minutes: 180
+    # A DP+EP case may legitimately spend 100 minutes in engine startup
+    # (VLLM_ENGINE_READY_TIMEOUT_S=6000) before the ~45 minute GSM8K pass, so
+    # the budget has to clear both plus container setup.
+    timeout-minutes: 240
     strategy:
       fail-fast: false
       matrix:
@@ -161,6 +164,12 @@ jobs:
           HF_HUB_OFFLINE: "1"
           GSM8K_DATASET_PATH: ${{ inputs.gsm8k_dataset_path }}
           MODEL_KEY: ${{ matrix.model.model_key }}
+          CASE_ID: ${{ matrix.model.case_id }}
+          # Full 'vllm serve' argv for this case, or [] to use the evaluator's
+          # built-in list. Cases sharing a checkpoint differ only here.
+          SERVER_CMD: ${{ toJSON(matrix.model.server_cmd) }}
+          # Extra env for the server process only, or {} when unused.
+          SERVER_ENV: ${{ toJSON(matrix.model.server_env) }}
           MODEL_ID: ${{ matrix.model.model_id }}
         run: bash "${PPU_CI_SOURCE_DIR}/scripts/ci/ppu_runtime_container.sh" model-accuracy
 
@@ -168,7 +177,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ppu-accuracy-${{ matrix.model.model_key }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ppu-accuracy-${{ matrix.model.case_id }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ steps.runtime.outputs.artifacts }}/**
             ${{ steps.runtime.outputs.wheels }}/wheel-manifest.json

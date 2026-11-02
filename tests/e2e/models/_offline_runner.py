@@ -304,11 +304,17 @@ def release_llm(llm: Any) -> None:
 
 
 def _checkpoint_tail(checkpoint: Any) -> str | None:
-    """Last two path segments (mount-independent identity)."""
+    """Last two path segments (mount-independent identity).
+
+    The accuracy lane passes the Hugging Face id rather than a path, so the
+    tail of ``T-HEAD/<name>`` is the whole id; for a path it is the last two
+    segments, which survive a different mount root.
+    """
     if checkpoint is None:
         return None
-    parts = [part for part in Path(str(checkpoint)).parts if part not in {"/", "\\"}]
-    return "/".join(parts[-2:]) if parts else str(checkpoint)
+    path = Path(str(checkpoint))
+    parts = [part for part in path.parts if part not in {"/", "\\"}]
+    return "/".join(parts[-2:]) if parts else str(path)
 
 
 def _quantization_info(llm: Any) -> dict[str, Any] | None:

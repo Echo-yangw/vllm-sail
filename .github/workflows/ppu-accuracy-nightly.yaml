@@ -19,16 +19,17 @@ name: PPU accuracy nightly
 #               nothing but the repository, so it runs alongside the build.
 #   accuracy -- one reusable call per model. A single model already needs all
 #               eight devices and ppu_runtime_container.sh takes an exclusive
-#               flock on the runner, so max-parallel stays at 1; four models
-#               therefore need roughly four to six hours end to end.
+#               flock on the runner, so max-parallel stays at 1; the catalog
+#               currently has eight accuracy cases, i.e. most of a day.
 #
 # What the lane gates on
-#   * score >= threshold (0.9) for every model;
-#   * the reviewed golden under tests/e2e/models/_golden when one exists.
-#     ppu_e2e_accuracy.sh seeds that read-only directory into the writable
-#     results tree before evaluating, and a model without a golden only
-#     reports "created" and uploads a *.pending-review.json artifact for a
-#     human to promote into the repository.
+#   * the reviewed golden under tests/e2e/models/_golden when one exists
+#     (score inside the checkpoint's band);
+#   * score >= threshold (0.9) for a checkpoint that has no golden yet.
+#     ppu_e2e_accuracy.sh seeds the read-only golden directory into the
+#     writable results tree before evaluating, and a model without a golden
+#     only reports "created" and uploads a *.pending-review.json artifact for
+#     a human to promote into the repository.
 #
 # Chip coverage: the lane runs on the self-hosted 8-ppu-m890p runner and uses
 # whatever devices that host exposes, so deepseek-v4-int8 (catalog board
@@ -36,8 +37,9 @@ name: PPU accuracy nightly
 # that chip. A true 810E lane needs the ppu-scheduler-action route the kernel
 # and perf lanes use, which the local Docker wrapper cannot provide.
 #
-# Schedule: 12:00 UTC = 20:00 CST, ahead of the 18:30 UTC upstream-reuse and
-# 20:00 UTC perf lanes, so the four serial models finish before they start.
+# Schedule: 12:00 UTC = 20:00 CST. The serial accuracy cases are long, so the
+# window is chosen only to start ahead of the 18:30 UTC upstream-reuse and
+# 20:00 UTC perf lanes; the run does not wait for them.
 
 on:
   workflow_dispatch:
@@ -104,22 +106,16 @@ jobs:
           spec.loader.exec_module(select)
 
           catalog = json.loads(select.CATALOG.read_text())
-          # The matrix drives the reusable call, which takes catalog keys;
-          # build_accuracy_matrix works in evaluator keys.
-          catalog_key = {
-              select.ACCURACY_MODEL_KEYS[entry["key"]]: entry["key"]
-              for entry in catalog
-              if entry.get("category") == "accuracy"
-          }
           requested = os.environ.get("MODELS", "")
           try:
               selected = select.build_accuracy_matrix(catalog, requested)["include"]
           except ValueError as error:
               # A typo in the dispatch input must fail the run, not crash it.
               sys.exit(str(error))
-          include = [
-              {"model": catalog_key[entry["model_key"]]} for entry in selected
-          ]
+          # The reusable call takes catalog keys, so hand it the case id: it is
+          # the catalog key and the only label that stays unique when two cases
+          # exercise one checkpoint with different serve arguments.
+          include = [{"model": entry["case_id"]} for entry in selected]
           if not include:
               sys.exit(f"no accuracy model selected by MODELS={requested!r}")
 

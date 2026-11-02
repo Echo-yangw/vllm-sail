@@ -52,6 +52,14 @@ def _load_evaluator():
     return module
 
 
+#: The sampling contract every golden in these tests was recorded under.
+_GENERATION: dict[str, Any] = {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "max_tokens": 10240,
+}
+
+
 def _make_golden(
     chip: str = CHIP,
     checkpoint: str = CHECKPOINT_A,
@@ -72,11 +80,13 @@ def _make_golden(
         },
         "serving_cfg": {
             "tensor_parallel_size": 8,
-            "max_model_len": 4096,
-            "dtype": "bfloat16",
+            "gpu_memory_utilization": 0.9,
+            "seed": 0,
         },
+        "generation_cfg": dict(_GENERATION),
         "score": score,
-        "score_num": 1319,
+        # Correct answers, i.e. round(score * num).
+        "score_num": round(score * 1319),
     }
     kwargs.update(overrides)
     return gate.build_accuracy_golden(**kwargs)
@@ -258,7 +268,7 @@ def test_golden_comparison_fails_on_regression(
 
     ok, err = gate.check_accuracy_golden(0.92, 1319, loaded)
     assert ok is False
-    assert "regression" in err
+    assert "band gate failed" in err
 
 
 # ---------------------------------------------------------------------------
@@ -350,6 +360,63 @@ def test_update_golden_below_threshold_preserves_baselines(
     assert pending.exists()
 
 
+def test_committed_golden_below_threshold_passes_inside_its_band(
+    tmp_path: Path,
+) -> None:
+    """A 0.60 golden must gate at 0.60, not at the 0.9 fallback.
+
+    Before the band gate, every checkpoint was held to ``score >= 0.9`` even
+    when its own baseline was lower, so a legitimately lower-accuracy model
+    could never pass.
+    """
+    evaluator = _load_evaluator()
+    formal = tmp_path / gate.golden_filename("demo_model", CHIP)
+    pending = tmp_path / gate.pending_golden_filename("demo_model", CHIP)
+    gate.write_golden(_make_golden(score=0.60), formal)
+
+    result = evaluator._golden_compare(
+        record=_make_golden(score=0.61),
+        score=0.61,
+        num=1319,
+        chip=CHIP,
+        ckpt_tail=_make_golden()["checkpoint_tail"],
+        gf=formal,
+        pending_gf=pending,
+        golden_root=tmp_path,
+        update_golden=False,
+        model_key="demo_model",
+    )
+
+    assert result["status"] == "pass"
+    assert result["error"] is None
+
+
+def test_committed_golden_below_threshold_fails_outside_its_band(
+    tmp_path: Path,
+) -> None:
+    """Below the fallback threshold, the band still decides the verdict."""
+    evaluator = _load_evaluator()
+    formal = tmp_path / gate.golden_filename("demo_model", CHIP)
+    pending = tmp_path / gate.pending_golden_filename("demo_model", CHIP)
+    gate.write_golden(_make_golden(score=0.60), formal)
+
+    result = evaluator._golden_compare(
+        record=_make_golden(score=0.55),
+        score=0.55,
+        num=1319,
+        chip=CHIP,
+        ckpt_tail=_make_golden()["checkpoint_tail"],
+        gf=formal,
+        pending_gf=pending,
+        golden_root=tmp_path,
+        update_golden=False,
+        model_key="demo_model",
+    )
+
+    assert result["status"] == "fail_accuracy"
+    assert "band gate failed" in result["error"]
+
+
 def test_update_golden_promotes_and_deletes_pending(
     tmp_path: Path,
 ) -> None:
@@ -373,6 +440,41 @@ def test_update_golden_promotes_and_deletes_pending(
     assert loaded["score"] == record["score"]
 
 
+def test_golden_from_another_sampling_contract_is_a_config_failure(
+    tmp_path: Path,
+) -> None:
+    """A drifted knob is not a regression: it invalidates the comparison.
+
+    ``temperature`` alone moves GSM8K by more than the band, so reporting the
+    score delta here would name the wrong cause.  The score below sits inside
+    the band, which proves the contract is settled before the band is.
+    """
+    evaluator = _load_evaluator()
+    formal = tmp_path / gate.golden_filename("demo_model", CHIP)
+    pending = tmp_path / gate.pending_golden_filename("demo_model", CHIP)
+    gate.write_golden(_make_golden(score=0.95), formal)
+    record = _make_golden(
+        score=0.95,
+        generation_cfg={"temperature": 0.0, "top_p": 0.95, "max_tokens": 10240},
+    )
+
+    result = evaluator._golden_compare(
+        record=record,
+        score=record["score"],
+        num=1319,
+        chip=CHIP,
+        ckpt_tail=record["checkpoint_tail"],
+        gf=formal,
+        pending_gf=pending,
+        golden_root=tmp_path,
+        update_golden=False,
+        model_key="demo_model",
+    )
+
+    assert result["status"] == "fail_config"
+    assert "temperature" in result["error"]
+
+
 # ---------------------------------------------------------------------------
 # _golden/README.md documents the new schema.
 # ---------------------------------------------------------------------------
@@ -387,6 +489,15 @@ def test_golden_readme_documents_schema_v2() -> None:
     assert "schema_version" in text
     assert "score" in text
     assert "tolerance" in text
+
+
+def test_golden_readme_documents_the_sampling_contract() -> None:
+    text = GOLDEN_README.read_text()
+    assert "fail_config" in text
+    assert "generation" in text
+    # The uniform output budget and the window it has to stay under.
+    assert "10240" in text
+    assert "16384" in text
 
 
 def test_golden_readme_documents_threshold() -> None:

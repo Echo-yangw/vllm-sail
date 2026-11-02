@@ -43,6 +43,12 @@ done
     exit 2
 }
 
+# transformers builds the cache for remote model code under HF_MODULES_CACHE,
+# which defaults to ${HF_HOME}/modules. HF_HOME is mounted read-only below, so
+# point it at a writable path; a weight that ships its own tokenizer stops at
+# engine start with EROFS instead of loading.
+hf_modules_cache=/tmp/hf-modules
+
 exec 9>/tmp/vllm-sail-ppu-ci.lock
 flock -n 9 || { echo "Another vLLM SAIL PPU job is active on this runner" >&2; exit 2; }
 
@@ -165,6 +171,7 @@ case "${mode}" in
             --mount "type=bind,source=${hf_home},target=${hf_home},readonly"
             --env MODEL_ID="${MODEL_ID}"
             --env HF_HOME="${hf_home}"
+            --env HF_MODULES_CACHE="${hf_modules_cache}"
             --env HF_HUB_OFFLINE=1
             --env TRANSFORMERS_OFFLINE=1
             --env SERVED_NAME="${SERVED_NAME}"
@@ -184,6 +191,8 @@ case "${mode}" in
         : "${PPU_CI_HF_HOME:?PPU_CI_HF_HOME is required for model-accuracy}"
         : "${MODEL_KEY:?MODEL_KEY is required for model-accuracy}"
         : "${MODEL_ID:?MODEL_ID is required for model-accuracy}"
+        # Several cases may share one checkpoint; only the label differs.
+        case_id="${CASE_ID:-${MODEL_KEY}}"
         hf_home=$(realpath "${PPU_CI_HF_HOME}")
         gsm8k_dataset=$(realpath "${GSM8K_DATASET_PATH}")
         [[ -d "${hf_home}" ]] || {
@@ -200,11 +209,15 @@ case "${mode}" in
             --mount "type=bind,source=${hf_home},target=${hf_home},readonly"
             --mount "type=bind,source=${gsm8k_dataset},target=${gsm8k_dataset},readonly"
             --env HF_HOME="${hf_home}"
+            --env HF_MODULES_CACHE="${hf_modules_cache}"
             --env HF_HUB_OFFLINE=1
             --env TRANSFORMERS_OFFLINE=1
             --env MODEL_ID="${MODEL_ID}"
             --env GSM8K_DATASET_PATH="${gsm8k_dataset}"
             --env MODEL_KEY="${MODEL_KEY}"
+            --env CASE_ID="${case_id}"
+            --env SERVER_CMD="${SERVER_CMD:-}"
+            --env SERVER_ENV="${SERVER_ENV:-}"
             --env RESULTS_DIR=/artifacts
             --env UPDATE_GOLDEN="${UPDATE_GOLDEN:-0}"
             --env THRESHOLD="${THRESHOLD:-0.9}"

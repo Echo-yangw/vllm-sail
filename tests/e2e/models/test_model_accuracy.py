@@ -98,5 +98,6 @@ def test_minimax_m3_fp8_accuracy(chip_capability: Any, golden_store: Any) -> Non
     _run_model("minimax-m3-fp8", chip_capability, golden_store)
 
 
+@pytest.mark.cap89
 def test_qwen3_8_flash_next_accuracy(chip_capability: Any, golden_store: Any) -> None:
     _run_model("qwen3.8-flash-next", chip_capability, golden_store)

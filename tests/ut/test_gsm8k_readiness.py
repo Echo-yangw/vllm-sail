@@ -26,6 +26,8 @@ import importlib.util
 import io
 import json
 import os
+import sys
+import types
 from pathlib import Path
 from typing import Any
 
@@ -98,6 +100,357 @@ class _FakeProc:
             self.returncode = self._pending_rc
             return self._pending_rc
         return None
+
+
+# ---------------------------------------------------------------------------
+# Per-case serve command
+# ---------------------------------------------------------------------------
+
+
+def _capture_argv(
+    evaluator: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    log_path: Path,
+    **kwargs: Any,
+) -> list[str]:
+    captured: dict[str, list[str]] = {}
+
+    class _FakePopen:
+        def __init__(self, cmd: list[str], **_kwargs: Any) -> None:
+            captured["cmd"] = cmd
+
+    monkeypatch.setattr(evaluator.subprocess, "Popen", _FakePopen)
+    evaluator.start_vllm_server(
+        "/ckpt/model",
+        served_model_name="demo-run-abc",
+        port=9999,
+        log_path=log_path,
+        **kwargs,
+    )
+    return captured["cmd"]
+
+
+def test_default_argv_used_when_case_has_no_server_cmd(
+    evaluator: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cmd = _capture_argv(evaluator, monkeypatch, tmp_path / "serve.log", tp=4)
+    assert cmd[:3] == ["vllm", "serve", "/ckpt/model"]
+    assert cmd[cmd.index("--tensor-parallel-size") + 1] == "4"
+    assert cmd[cmd.index("--port") + 1] == "9999"
+    # Without this the engine falls back to the checkpoint's 1M window and
+    # spends ~997s capturing graphs no GSM8K sample can use.
+    assert cmd[cmd.index("--max-model-len") + 1] == "16384"
+    # Production serves with CUDA graphs; eager would change the numbers the
+    # goldens were recorded from.
+    assert "--enforce-eager" not in cmd
+
+
+def test_case_server_cmd_replaces_the_default_argv(
+    evaluator: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A case argv wins wholesale: flags it omits must not come back."""
+    cmd = _capture_argv(
+        evaluator,
+        monkeypatch,
+        tmp_path / "serve.log",
+        server_cmd=[
+            "vllm",
+            "serve",
+            "{model}",
+            "--served-model-name",
+            "{served_name}",
+            "--port",
+            "{port}",
+            "--enable-expert-parallel",
+        ],
+    )
+    assert cmd == [
+        "vllm",
+        "serve",
+        "/ckpt/model",
+        "--served-model-name",
+        "demo-run-abc",
+        "--port",
+        "9999",
+        "--enable-expert-parallel",
+    ]
+    assert "--tensor-parallel-size" not in cmd
+
+
+def test_evalscope_budget_stays_below_the_served_window(
+    evaluator: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A repeating model never emits EOS, so max_tokens caps the damage.
+
+    Set to the served window instead, one broken sample would burn the whole
+    night's budget.
+    """
+    captured = _capture_task_config(evaluator, monkeypatch)
+
+    evaluator.run_evalscope("demo-run-abc", 9999, "/data/gsm8k")
+    generation = captured["generation_config"]
+    assert generation["max_tokens"] == 10240
+    assert generation["max_tokens"] < evaluator.DEFAULT_MAX_MODEL_LEN
+
+
+def test_evalscope_passes_the_weight_contract_through(
+    evaluator: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sampling parameters are forwarded verbatim, knobs the SDK lacks included.
+
+    evalscope moves whatever the OpenAI SDK rejects (``top_k``, ``min_p``)
+    into ``extra_body``, so the evaluator must not filter them here.
+    """
+    captured = _capture_task_config(evaluator, monkeypatch)
+    contract = {
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 20,
+        "min_p": 0.0,
+        "max_tokens": 10240,
+    }
+
+    evaluator.run_evalscope(
+        "demo-run-abc", 9999, "/data/gsm8k", generation_config=contract
+    )
+
+    assert captured["generation_config"] == contract
+
+
+def _capture_task_config(
+    evaluator: Any, monkeypatch: pytest.MonkeyPatch
+) -> dict[str, Any]:
+    """Run evalscope against a stubbed ``TaskConfig`` and return its kwargs."""
+    captured: dict[str, Any] = {}
+
+    class _FakeTaskConfig:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+    fake = types.ModuleType("evalscope")
+    fake.TaskConfig = _FakeTaskConfig
+    fake.run_task = lambda **_kwargs: {"gsm8k": None}
+    monkeypatch.setitem(sys.modules, "evalscope", fake)
+    return captured
+
+
+def _capture_popen(
+    evaluator: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    log_path: Path,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Start the server with a stubbed Popen and return its keyword args."""
+    captured: dict[str, Any] = {}
+
+    class _FakePopen:
+        def __init__(self, cmd: list[str], **popen_kwargs: Any) -> None:
+            captured["cmd"] = cmd
+            captured.update(popen_kwargs)
+
+    monkeypatch.setattr(evaluator.subprocess, "Popen", _FakePopen)
+    evaluator.start_vllm_server(
+        "/ckpt/model",
+        served_model_name="demo-run-abc",
+        port=9999,
+        log_path=log_path,
+        **kwargs,
+    )
+    return captured
+
+
+def test_server_env_merges_over_the_inherited_environment(
+    evaluator: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The case env must add to the inherited env, never replace it."""
+    monkeypatch.setenv("HF_HOME", "/nas/hf_cache")
+    monkeypatch.setenv("VLLM_ENGINE_READY_TIMEOUT_S", "900")
+    popen = _capture_popen(
+        evaluator,
+        monkeypatch,
+        tmp_path / "serve.log",
+        server_env={"VLLM_ENGINE_READY_TIMEOUT_S": "6000", "DG_X": "1"},
+    )
+    env = popen["env"]
+    # Overridden key wins, inherited keys survive, new keys appear.
+    assert env["VLLM_ENGINE_READY_TIMEOUT_S"] == "6000"
+    assert env["HF_HOME"] == "/nas/hf_cache"
+    assert env["DG_X"] == "1"
+
+
+def test_no_server_env_keeps_the_inherited_environment(
+    evaluator: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``env=None`` lets Popen inherit, which is what legacy cases rely on."""
+    popen = _capture_popen(evaluator, monkeypatch, tmp_path / "serve.log")
+    assert popen["env"] is None
+
+
+@pytest.mark.parametrize(
+    ("server_env", "expected"),
+    [
+        # No override keeps the measured CUDA-graph cold-start budget.
+        (None, 3600),
+        ({}, 3600),
+        # A long engine-ready budget must also widen the probe, otherwise the
+        # probe abandons a DP+EP start the engine still considers healthy.
+        ({"VLLM_ENGINE_READY_TIMEOUT_S": "6000"}, 6000),
+        # A shorter engine budget never shrinks the measured floor.
+        ({"VLLM_ENGINE_READY_TIMEOUT_S": "600"}, 3600),
+        # Unrelated variables and junk values fall back to the floor.
+        ({"DG_USE_MOE_DYNAMIC_TILE": "1"}, 3600),
+        ({"VLLM_ENGINE_READY_TIMEOUT_S": "soon"}, 3600),
+    ],
+)
+def test_server_ready_timeout_tracks_the_engine_budget(
+    evaluator: Any, server_env: dict[str, str] | None, expected: int
+) -> None:
+    assert evaluator._server_ready_timeout(server_env) == expected
+
+
+def test_placeholder_expansion_only_touches_known_names(evaluator: Any) -> None:
+    expanded = evaluator._expand_server_placeholders(
+        "{model}/sub-{port}", model="/ckpt/m", port=8080, served_name="s"
+    )
+    assert expanded == "/ckpt/m/sub-8080"
+    # An unrelated brace pair must survive verbatim rather than raising.
+    assert (
+        evaluator._expand_server_placeholders(
+            "{unknown}", model="m", port=1, served_name="s"
+        )
+        == "{unknown}"
+    )
+
+
+def _run_cli(
+    evaluator: Any, monkeypatch: pytest.MonkeyPatch, *argv: str
+) -> dict[str, Any]:
+    """Invoke ``main()`` with a stubbed evaluator and return its kwargs."""
+    captured: dict[str, Any] = {}
+
+    def _fake_run(model_key: str, **kwargs: Any) -> dict[str, Any]:
+        captured["model_key"] = model_key
+        captured.update(kwargs)
+        return {"status": "pass"}
+
+    monkeypatch.setattr(evaluator, "run_accuracy_eval", _fake_run)
+    monkeypatch.setattr(evaluator.sys, "argv", ["ppu_gsm8k_eval.py", *argv])
+    evaluator.main()
+    return captured
+
+
+def test_cli_parses_server_cmd_json_into_an_argv(
+    evaluator: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured = _run_cli(
+        evaluator,
+        monkeypatch,
+        "--model-key",
+        "deepseek_v4_mxfp4",
+        "--case-id",
+        "deepseek-v4-mxfp4-ep",
+        "--server-cmd",
+        json.dumps(["vllm", "serve", "{model}", "--enable-expert-parallel"]),
+    )
+    assert captured["model_key"] == "deepseek_v4_mxfp4"
+    assert captured["case_id"] == "deepseek-v4-mxfp4-ep"
+    assert captured["server_cmd"] == [
+        "vllm",
+        "serve",
+        "{model}",
+        "--enable-expert-parallel",
+    ]
+
+
+def test_cli_omits_server_cmd_when_the_case_leaves_it_free(
+    evaluator: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured = _run_cli(evaluator, monkeypatch, "--model-key", "deepseek_v4_mxfp4")
+    # None, not [], so start_vllm_server takes its built-in branch.
+    assert captured["server_cmd"] is None
+    assert captured["case_id"] is None
+
+
+@pytest.mark.parametrize(
+    ("raw", "message"),
+    [
+        ("vllm serve {model}", "not valid JSON"),
+        ('"--enable-expert-parallel"', "array of strings"),
+        ("[1, 2]", "array of strings"),
+    ],
+)
+def test_cli_rejects_malformed_server_cmd(
+    evaluator: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    raw: str,
+    message: str,
+) -> None:
+    """A typo in the catalog fails before any server is started."""
+    monkeypatch.setattr(evaluator, "run_accuracy_eval", pytest.fail)
+    monkeypatch.setattr(
+        evaluator.sys,
+        "argv",
+        [
+            "ppu_gsm8k_eval.py",
+            "--model-key",
+            "deepseek_v4_mxfp4",
+            "--server-cmd",
+            raw,
+        ],
+    )
+    with pytest.raises(SystemExit, match=message):
+        evaluator.main()
+
+
+def test_cli_parses_server_env_json_into_a_map(
+    evaluator: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured = _run_cli(
+        evaluator,
+        monkeypatch,
+        "--model-key",
+        "deepseek_v4_int8",
+        "--server-env",
+        json.dumps({"VLLM_ENGINE_READY_TIMEOUT_S": "6000"}),
+    )
+    assert captured["server_env"] == {"VLLM_ENGINE_READY_TIMEOUT_S": "6000"}
+
+
+def test_cli_omits_server_env_when_the_case_leaves_it_free(
+    evaluator: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured = _run_cli(evaluator, monkeypatch, "--model-key", "deepseek_v4_mxfp4")
+    assert captured["server_env"] is None
+
+
+@pytest.mark.parametrize(
+    ("raw", "message"),
+    [
+        ("VLLM_ENGINE_READY_TIMEOUT_S=6000", "not valid JSON"),
+        ('"6000"', "JSON object of string values"),
+        ('{"A": 6000}', "JSON object of string values"),
+    ],
+)
+def test_cli_rejects_malformed_server_env(
+    evaluator: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    raw: str,
+    message: str,
+) -> None:
+    monkeypatch.setattr(evaluator, "run_accuracy_eval", pytest.fail)
+    monkeypatch.setattr(
+        evaluator.sys,
+        "argv",
+        [
+            "ppu_gsm8k_eval.py",
+            "--model-key",
+            "deepseek_v4_int8",
+            "--server-env",
+            raw,
+        ],
+    )
+    with pytest.raises(SystemExit, match=message):
+        evaluator.main()
 
 
 # ---------------------------------------------------------------------------

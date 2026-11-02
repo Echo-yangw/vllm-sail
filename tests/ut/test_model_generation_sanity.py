@@ -43,13 +43,13 @@ def test_gsm8k_full_size() -> None:
     assert gate.GSM8K_FULL_SIZE == 1319
 
 
-def test_default_tolerance_has_required_keys() -> None:
+def test_default_tolerance_is_a_symmetric_band() -> None:
     t = gate.DEFAULT_TOLERANCE
-    assert "mode" in t
-    assert "rel" in t
-    assert "abs" in t
-    assert "hard_floor" in t
-    assert t["hard_floor"] == gate.DEFAULT_THRESHOLD
+    assert t["mode"] == "band"
+    assert t["abs"] == 0.02
+    # The threshold is the fallback for a checkpoint with no golden yet; it
+    # must not also cap goldens that legitimately sit below it.
+    assert "hard_floor" not in t
 
 
 # ---------------------------------------------------------------------------
@@ -114,9 +114,17 @@ def test_invalid_scores_are_rejected() -> None:
 # ---------------------------------------------------------------------------
 
 
+#: The sampling contract every golden in these tests was recorded under.
+_GENERATION: dict[str, Any] = {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "max_tokens": 10240,
+}
+
+
 def _make_golden(
     score: float = 0.92,
-    score_num: int = 1319,
+    score_num: int | None = None,
     **overrides: Any,
 ) -> dict[str, Any]:
     """Helper: build a golden record with sensible defaults."""
@@ -133,11 +141,12 @@ def _make_golden(
         },
         "serving_cfg": {
             "tensor_parallel_size": 8,
-            "max_model_len": 4096,
-            "dtype": "bfloat16",
+            "gpu_memory_utilization": 0.9,
+            "seed": 0,
         },
+        "generation_cfg": dict(_GENERATION),
         "score": score,
-        "score_num": score_num,
+        "score_num": round(score * 1319) if score_num is None else score_num,
     }
     kwargs.update(overrides)
     return gate.build_accuracy_golden(**kwargs)
@@ -150,7 +159,9 @@ def test_build_golden_has_required_fields() -> None:
     assert record["chip"] == "890p"
     assert record["benchmark"] == "gsm8k"
     assert record["score"] == 0.92
-    assert record["score_num"] == 1319
+    # Correct answers, not samples asked.
+    assert record["score_num"] == round(0.92 * 1319)
+    assert record["generation"] == _GENERATION
     assert "measured_at" in record
     assert "tolerance" in record
     assert record["checkpoint_tail"] is not None
@@ -190,57 +201,147 @@ def test_completeness_gate_skipped_when_num_expected_absent() -> None:
     assert ok is True
 
 
-def test_hard_floor_gate_fails_below_floor() -> None:
+def test_band_gate_fails_below_lower_bound() -> None:
     golden = _make_golden(score=0.92, score_num=1319)
+    # band = [0.90, 0.94]
     ok, err = gate.check_accuracy_golden(0.85, 1319, golden)
     assert ok is False
-    assert "hard floor" in err
+    assert "band gate failed" in err
 
 
-def test_hard_floor_gate_passes_at_floor() -> None:
+def test_band_gate_fails_above_upper_bound() -> None:
+    golden = _make_golden(score=0.80, score_num=1319)
+    # band = [0.78, 0.82]; a jump this large means the golden is stale.
+    ok, err = gate.check_accuracy_golden(0.90, 1319, golden)
+    assert ok is False
+    assert "band gate failed" in err
+    assert "0.8200" in err
+
+
+def test_band_gate_passes_at_lower_bound() -> None:
     golden = _make_golden(score=0.92, score_num=1319)
     ok, err = gate.check_accuracy_golden(0.9, 1319, golden)
     assert ok is True
+    assert err is None
 
 
-def test_regression_gate_fails_on_large_drop() -> None:
+def test_band_gate_passes_at_upper_bound() -> None:
+    golden = _make_golden(score=0.92, score_num=1319)
+    ok, err = gate.check_accuracy_golden(0.94, 1319, golden)
+    assert ok is True
+    assert err is None
+
+
+def test_band_gate_ignores_global_threshold() -> None:
+    """A golden below the fallback threshold still governs its checkpoint."""
+    golden = _make_golden(score=0.60, score_num=1319)
+    ok, err = gate.check_accuracy_golden(0.61, 1319, golden)
+    assert ok is True
+    assert err is None
+
+
+def test_band_gate_fails_on_large_drop() -> None:
     golden = _make_golden(score=0.95, score_num=1319)
-    # regression_delta = max(0.02, (1-0.99)*0.95) = max(0.02, 0.0095) = 0.02
-    # lower_bound = 0.95 - 0.02 = 0.93
+    # band = [0.93, 0.97]
     ok, err = gate.check_accuracy_golden(0.92, 1319, golden)
     assert ok is False
-    assert "regression" in err
+    assert "band gate failed" in err
 
 
-def test_regression_gate_passes_within_tolerance() -> None:
+def test_band_gate_passes_within_tolerance() -> None:
     golden = _make_golden(score=0.95, score_num=1319)
-    # lower_bound = 0.95 - 0.02 = 0.93
+    # band = [0.93, 0.97]
     ok, err = gate.check_accuracy_golden(0.935, 1319, golden)
     assert ok is True
     assert err is None
 
 
-def test_regression_gate_uses_custom_tolerance() -> None:
+def test_band_gate_uses_custom_tolerance() -> None:
+    golden = _make_golden(score=0.95, score_num=1319)
+    golden["tolerance"] = {"mode": "band", "abs": 0.01}
+    # band = [0.94, 0.96]
+    ok, err = gate.check_accuracy_golden(0.935, 1319, golden)
+    assert ok is False
+    assert "band gate failed" in err
+
+
+def test_legacy_lower_bound_golden_still_gates() -> None:
+    """Records written before the band keep their one-sided semantics."""
     golden = _make_golden(score=0.95, score_num=1319)
     golden["tolerance"] = {
+        "mode": "lower_bound",
         "rel": 0.99,
-        "abs": 0.01,
-        "hard_floor": 0.8,
+        "abs": 0.02,
+        "hard_floor": 0.9,
     }
-    # regression_delta = max(0.01, 0.01*0.95) = max(0.01, 0.0095) = 0.01
-    # lower_bound = 0.95 - 0.01 = 0.94
-    ok, err = gate.check_accuracy_golden(0.935, 1319, golden)
+    ok, err = gate.check_accuracy_golden(0.94, 1319, golden)
+    assert ok is True
+    assert err is None
+    ok, err = gate.check_accuracy_golden(0.92, 1319, golden)
     assert ok is False
     assert "regression" in err
 
 
 def test_gates_are_evaluated_in_order() -> None:
-    """Completeness gate fires before hard floor and regression."""
+    """Completeness fires before the band."""
     golden = _make_golden(score=0.95, score_num=1319)
-    # score=0.5 would fail all three; completeness should be reported first.
+    # score=0.5 would fail both; completeness should be reported first.
     ok, err = gate.check_accuracy_golden(0.5, 100, golden)
     assert ok is False
     assert "completeness" in err
+
+
+# ---------------------------------------------------------------------------
+# check_generation_config — the golden and the run must sample alike.
+# ---------------------------------------------------------------------------
+
+
+def test_generation_gate_passes_on_the_same_contract() -> None:
+    golden = _make_golden()
+    assert gate.check_generation_config(golden, dict(_GENERATION)) == (True, None)
+
+
+def test_generation_gate_tolerates_int_float_spelling() -> None:
+    """A hand-edited ``1`` must compare equal to the recorded ``1.0``."""
+    golden = _make_golden(
+        generation_cfg={"temperature": 1, "max_tokens": 10240},
+    )
+    ok, err = gate.check_generation_config(
+        golden, {"temperature": 1.0, "max_tokens": 10240.0}
+    )
+    assert ok is True
+    assert err is None
+
+
+def test_generation_gate_fails_on_a_drifted_value() -> None:
+    golden = _make_golden()
+    ok, err = gate.check_generation_config(golden, {**_GENERATION, "temperature": 0.0})
+    assert ok is False
+    assert "temperature" in err
+    assert "run=0.0" in err
+
+
+def test_generation_gate_fails_when_a_knob_is_added_or_lost() -> None:
+    """Either direction of drift makes the two scores incomparable."""
+    golden = _make_golden()
+    ok, err = gate.check_generation_config(golden, {**_GENERATION, "top_k": 20})
+    assert ok is False
+    assert "top_k" in err
+    assert "<absent>" in err
+
+    ok, err = gate.check_generation_config(golden, {"temperature": 1.0})
+    assert ok is False
+    assert "top_p" in err
+    assert "max_tokens" in err
+
+
+def test_generation_gate_rejects_a_golden_without_the_block() -> None:
+    """A golden that predates the contract cannot gate a run at all."""
+    golden = _make_golden()
+    golden.pop("generation")
+    ok, err = gate.check_generation_config(golden, dict(_GENERATION))
+    assert ok is False
+    assert "--update-golden" in err
 
 
 # ---------------------------------------------------------------------------
@@ -281,7 +382,7 @@ def test_accuracy_test_uses_correct_marks() -> None:
     text = ACCURACY_TEST.read_text()
     assert "pytest.mark.ppu" in text
     assert "pytest.mark.model_e2e" in text
-    assert text.count("@pytest.mark.cap89") == 2
+    assert text.count("@pytest.mark.cap89") == 3
 
 
 def test_accuracy_test_requires_eight_devices() -> None:

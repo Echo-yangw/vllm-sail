@@ -47,8 +47,10 @@ from tests.e2e.models._accuracy_gate import (  # noqa: E402
     GSM8K_FULL_SIZE,
     build_accuracy_golden,
     check_accuracy_golden,
+    check_generation_config,
     check_golden_identity,
     check_score_threshold,
+    describe_serving,
     golden_filename,
     pending_golden_filename,
     read_golden,
@@ -65,10 +67,13 @@ from tests.e2e.models._offline_runner import (  # noqa: E402
 )
 
 # --- Server readiness / fatal detection ------------------------------------
-# Cold start on PPU is dominated by CUDA graph capture. With the checkpoint's
-# 1M-token context the engine captures 51 piecewise graphs plus 2 full ones,
-# measured at 997s, on top of ~317s of weight loading and ~200s of JIT kernel
-# warmup. The old 1800s budget expired mid-warmup.
+# Cold start on PPU is dominated by CUDA graph capture. Left at the checkpoint
+# default of 1,048,576 tokens the engine captures 51 piecewise graphs plus 2
+# full ones, measured at 997s, on top of ~317s of weight loading and ~200s of
+# JIT kernel warmup. Every serve command therefore pins the window explicitly:
+# GSM8K prompts and answers are far below it, and the shorter context collapses
+# the capture schedule. The old 1800s budget expired mid-warmup.
+DEFAULT_MAX_MODEL_LEN = 16384
 SERVER_READY_TIMEOUT = 3600
 SERVER_POST_READY_SLEEP = 30
 FATAL_RE = re.compile(
@@ -92,6 +97,47 @@ if not GSM8K_DATASET_PATH:
 # --- Golden / reports directories ------------------------------------------
 GOLDEN_DIR = _PROJECT_ROOT / "tests" / "e2e" / "models" / "_golden"
 
+# --- Generation parameters -------------------------------------------------
+# Sampling parameters belong to the weights, not to a case: two cases over one
+# checkpoint are compared against that checkpoint's single golden, so they must
+# be measured under one contract or their scores are not comparable.  A case
+# that needs a different layout changes its serve argv, never these values.
+#
+# ``max_tokens`` stays below ``DEFAULT_MAX_MODEL_LEN``: a model that starts
+# repeating never emits EOS, and one sample would otherwise burn the whole
+# served window.
+DEFAULT_MAX_TOKENS = 10240
+# Fallback only: every weight in ``MODEL_CONFIGS`` carries its own contract, and
+# a weight added without one falls back to greedy -- the reproducible choice.
+DEFAULT_GENERATION_CONFIG: dict[str, Any] = {
+    "temperature": 0.0,
+    "top_p": 0.95,
+    "max_tokens": DEFAULT_MAX_TOKENS,
+}
+
+
+def _generation(
+    *,
+    temperature: float,
+    top_p: float,
+    **extra: Any,
+) -> dict[str, Any]:
+    """Build the sampling parameters one weight is measured under.
+
+    ``temperature`` / ``top_p`` follow the team's reference generation config
+    for that weight family; ``max_tokens`` is ours and stays uniform.  Extra
+    keys (`top_k`, `min_p`, the penalties) are passed through as-is: evalscope
+    moves whatever the OpenAI SDK does not accept into ``extra_body``, and
+    vLLM reads it from there.
+    """
+    return {
+        "temperature": temperature,
+        "top_p": top_p,
+        "max_tokens": DEFAULT_MAX_TOKENS,
+        **extra,
+    }
+
+
 # --- Model configurations --------------------------------------------------
 MODEL_CONFIGS: dict[str, dict[str, Any]] = {
     "deepseek_v4_int8": {
@@ -104,7 +150,9 @@ MODEL_CONFIGS: dict[str, dict[str, Any]] = {
         #   heads_per_group = n_local_heads // n_local_groups
         # which divides by zero when TP > o_groups because
         #   n_local_groups = o_groups // tp_size = 8 // 16 = 0.
-        "tp": 8,
+        "ppu_count": 8,
+        # reference_generation_config.json: deepseek_v4_flash
+        "generation_config": _generation(temperature=1.0, top_p=1.0),
     },
     "deepseek_v4_mxfp4": {
         "model_id": (
@@ -115,16 +163,75 @@ MODEL_CONFIGS: dict[str, dict[str, Any]] = {
         "served_name": "deepseek-v4-mxfp4",
         "extra_flags": ["--trust-remote-code"],
         "chip": "890p",
+        # Same weights family as the int8 case: one contract, one golden.
+        "generation_config": _generation(temperature=1.0, top_p=1.0),
     },
     "minimax-m3-fp8": {
         "model_id": ("T-HEAD/MiniMax-M3-Quant-W-FP8-PerChannel-A-FP8-PerToken"),
         "served_name": "MiniMax-M3-Quant-W-FP8-PerChannel-A-FP8-PerToken",
         "extra_flags": ["--trust-remote-code"],
+        # The catalog runs this case on ZW-M890P; without the key the chip
+        # falls back to 810e and the golden would be filed under the wrong
+        # board.
+        "chip": "890p",
+        # reference_generation_config.json: minimax_m3
+        "generation_config": _generation(temperature=1.0, top_p=0.95),
+    },
+    "glm_5_3_mxfp4": {
+        "model_id": (
+            "T-HEAD/GLM-5.3-MoE-Quant-W-MXFP4-A-MXFP4-Dense-"
+            "Quant-W-FP8-PerChannel-A-FP8-PerToken"
+        ),
+        "served_name": "glm-5.3-mxfp4",
+        "extra_flags": ["--trust-remote-code"],
+        "chip": "890p",
+        # Half of a 890P node: the prefill recipe only needs four cards.
+        "ppu_count": 4,
+        # reference_generation_config.json: glm_5_3
+        "generation_config": _generation(temperature=1.0, top_p=1.0),
+    },
+    "glm_5_3_flash_mxfp4": {
+        "model_id": (
+            "T-HEAD/GLM-5.3-Flash-MoE-Quant-W-MXFP4-A-MXFP4-Dense-"
+            "Quant-W-FP8-PerChannel-A-FP8-PerToken"
+        ),
+        "served_name": "glm-5.3-flash-mxfp4",
+        "extra_flags": ["--trust-remote-code"],
+        "chip": "890p",
+        "ppu_count": 2,
+        # No row of its own in the reference config: same family as glm_5_3.
+        "generation_config": _generation(temperature=1.0, top_p=1.0),
+    },
+    "kimi_k2_6_mxfp4": {
+        "model_id": "T-HEAD/Kimi-K2.6-MXFP4-FP8",
+        "served_name": "kimi-k2.6-mxfp4",
+        "extra_flags": ["--trust-remote-code"],
+        "chip": "890p",
+        "ppu_count": 8,
+        # reference_generation_config.json: kimi_k2_6
+        "generation_config": _generation(temperature=1.0, top_p=0.95),
     },
     "qwen3.8-flash-next": {
-        "model_id": "Qwen/Qwen3.8-Flash-Next",
+        "model_id": (
+            "T-HEAD/Qwen3.8-Flash-Next-MoE-Quant-W-MXFP4-A-MXFP4-Dense-"
+            "Quant-W-FP8-PerChannel-A-FP8-PerToken"
+        ),
         "served_name": "Qwen3.8-Flash-Next",
         "extra_flags": ["--trust-remote-code"],
+        # The checkpoint README's recipe keeps every card in one process, so
+        # the requested count and the tensor parallel size are the same.
+        "chip": "890p",
+        "ppu_count": 4,
+        # No row of its own: reference_generation_config.json gives every
+        # qwen3_8 weight the same sampling parameters.
+        "generation_config": _generation(
+            temperature=1.0,
+            top_p=0.95,
+            top_k=20,
+            min_p=0.0,
+            presence_penalty=0.0,
+            repetition_penalty=1.0,
+        ),
     },
 }
 
@@ -144,19 +251,81 @@ def resolve_gsm8k_dataset() -> str:
 # ===================================================================
 
 
-def start_vllm_server(
+def _expand_server_placeholders(
+    token: str,
+    *,
+    model: str,
+    port: int,
+    served_name: str,
+) -> str:
+    """Substitute the case-level placeholders inside one argv token."""
+    return (
+        token.replace("{model}", model)
+        .replace("{port}", str(port))
+        .replace("{served_name}", served_name)
+    )
+
+
+def _parse_server_cmd(raw: str | None) -> list[str] | None:
+    """Decode ``--server-cmd`` into an argv, or ``None`` for the built-in one."""
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+    except ValueError as error:
+        raise SystemExit(f"--server-cmd is not valid JSON: {error}") from error
+    if not isinstance(value, list) or not all(
+        isinstance(token, str) for token in value
+    ):
+        raise SystemExit("--server-cmd must be a JSON array of strings")
+    return value
+
+
+def _parse_server_env(raw: str | None) -> dict[str, str] | None:
+    """Decode ``--server-env`` into a string map, or ``None`` when unused."""
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+    except ValueError as error:
+        raise SystemExit(f"--server-env is not valid JSON: {error}") from error
+    if not isinstance(value, dict) or not all(
+        isinstance(key, str) and isinstance(item, str) for key, item in value.items()
+    ):
+        raise SystemExit("--server-env must be a JSON object of string values")
+    return value
+
+
+def build_serve_argv(
     model: str,
     *,
     served_model_name: str,
     port: int = 9985,
     tp: int = 8,
     extra_flags: list[str] | None = None,
-    log_path: Path | None = None,
-) -> tuple[subprocess.Popen[bytes], Path]:
-    """Start ``vllm serve`` in a new session; return (proc, log)."""
-    if log_path is None:
-        log_path = Path("/tmp/vllm_serve_gsm8k.log")
-    cmd: list[str] = [
+    server_cmd: list[str] | None = None,
+) -> list[str]:
+    """Return the ``vllm serve`` argv this case will actually run.
+
+    ``server_cmd`` replaces the built-in argument list entirely when present.
+    It is a pure function so the golden can describe the layout the process
+    was started with instead of guessing from ``MODEL_CONFIGS``.
+
+    ``tp`` only shapes the built-in list: a recipe that ships its own argv
+    picks its own parallelism there, and this value then serves as nothing but
+    the card count the job requested.
+    """
+    if server_cmd:
+        return [
+            _expand_server_placeholders(
+                token,
+                model=model,
+                port=port,
+                served_name=served_model_name,
+            )
+            for token in server_cmd
+        ]
+    cmd = [
         "vllm",
         "serve",
         model,
@@ -170,18 +339,62 @@ def start_vllm_server(
         str(tp),
         "--gpu-memory-utilization",
         str(DEFAULT_GPU_MEMORY_UTILIZATION),
+        "--max-model-len",
+        str(DEFAULT_MAX_MODEL_LEN),
         "--trust-remote-code",
         "--seed",
         str(DEFAULT_SEED),
     ]
     if extra_flags:
         cmd.extend(extra_flags)
+    return cmd
+
+
+def start_vllm_server(
+    model: str,
+    *,
+    served_model_name: str,
+    port: int = 9985,
+    tp: int = 8,
+    extra_flags: list[str] | None = None,
+    server_cmd: list[str] | None = None,
+    server_env: dict[str, str] | None = None,
+    log_path: Path | None = None,
+) -> tuple[subprocess.Popen[bytes], Path]:
+    """Start ``vllm serve`` in a new session; return (proc, log).
+
+    ``server_cmd`` is a per-case argv carrying ``{model}``, ``{port}`` and
+    ``{served_name}`` placeholders.  When present it replaces the built-in
+    argument list entirely, so a case can drop a default flag or pick a
+    different parallel layout without the caller second-guessing it.  Cases
+    that leave it unset keep the shared defaults below.
+
+    ``server_env`` adds variables for this server process only.  It is merged
+    over the inherited environment rather than replacing it, so ``HF_HOME``,
+    the wheel paths and the rest of the CI contract survive.
+    """
+    if log_path is None:
+        log_path = Path("/tmp/vllm_serve_gsm8k.log")
+    cmd = build_serve_argv(
+        model,
+        served_model_name=served_model_name,
+        port=port,
+        tp=tp,
+        extra_flags=extra_flags,
+        server_cmd=server_cmd,
+    )
+    env = None
+    if server_env:
+        # A DP+EP launch needs its own engine-ready budget; the value given by
+        # the docs is per case, so it belongs here and not in the wrapper.
+        env = {**os.environ, **{k: str(v) for k, v in server_env.items()}}
     log_fh = open(log_path, "w")  # noqa: SIM115
     proc = subprocess.Popen(
         cmd,
         start_new_session=True,
         stdout=log_fh,
         stderr=subprocess.STDOUT,
+        env=env,
     )
     return proc, log_path
 
@@ -226,6 +439,23 @@ def _probe_models_endpoint(url: str, expected_served_name: str) -> bool:
         if isinstance(item, dict) and item.get("id") == expected_served_name:
             return True
     return False
+
+
+def _server_ready_timeout(server_env: dict[str, str] | None) -> int:
+    """Readiness budget for one case.
+
+    A ``--data-parallel-size 8 --enable-expert-parallel`` launch raises vLLM's
+    own engine-ready budget (the recipes set ``VLLM_ENGINE_READY_TIMEOUT_S`` to
+    6000); polling for less than that would abandon a start the engine still
+    considers healthy.
+    """
+    if not server_env:
+        return SERVER_READY_TIMEOUT
+    try:
+        engine_budget = int(server_env.get("VLLM_ENGINE_READY_TIMEOUT_S", ""))
+    except (TypeError, ValueError):
+        return SERVER_READY_TIMEOUT
+    return max(SERVER_READY_TIMEOUT, engine_budget)
 
 
 def wait_server_ready(
@@ -342,12 +572,22 @@ def run_evalscope(
     port: int,
     gsm8k_path: str,
     *,
+    generation_config: dict[str, Any] | None = None,
     limit: int | None = None,
     work_dir: Path | None = None,
 ) -> Any:
-    """Run evalscope GSM8K (runtime import)."""
+    """Run evalscope GSM8K (runtime import).
+
+    ``generation_config`` is the sampling contract of the weights under test;
+    it is passed through to ``TaskConfig`` untouched so every case over one
+    checkpoint samples identically.  The benchmark settings around it --
+    dataset, few-shot, batch size, seed -- stay shared by all cases.
+    """
     from evalscope import TaskConfig, run_task  # type: ignore[import-untyped]
 
+    generation = dict(
+        DEFAULT_GENERATION_CONFIG if generation_config is None else generation_config
+    )
     cfg = TaskConfig(
         model=served_name,
         api_url=f"http://127.0.0.1:{port}/v1",
@@ -362,10 +602,7 @@ def run_evalscope(
                 "subset_list": ["main"],
             }
         },
-        generation_config={
-            "temperature": 0,
-            "max_tokens": 65536,
-        },
+        generation_config=generation,
         eval_batch_size=128,
         limit=limit,
         seed=42,
@@ -395,6 +632,7 @@ def run_accuracy_eval(  # noqa: C901
     model_key: str,
     *,
     model_override: str | None = None,
+    case_id: str | None = None,
     chip: str = "auto",
     update_golden: bool = False,
     limit: int | None = None,
@@ -403,18 +641,30 @@ def run_accuracy_eval(  # noqa: C901
     port: int = 9985,
     served_model_name: str | None = None,
     extra_serve_flags: list[str] | None = None,
+    server_cmd: list[str] | None = None,
+    server_env: dict[str, str] | None = None,
     golden_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Run the full GSM8K accuracy eval pipeline.
 
+    ``model_key`` selects both the evaluation settings and the golden
+    identity: several cases may share one checkpoint, and they are all
+    compared against that checkpoint's single golden.  ``case_id`` only
+    labels the run.
+
     Returns a dict with keys: ``status``, ``score``, ``num``,
-    ``golden_path``, ``error``, ``record``.
+    ``golden_path``, ``error``, ``case_id``, ``record``.
     """
     if model_key not in MODEL_CONFIGS:
         raise ValueError(
             f"unknown model key {model_key!r}; available: {sorted(MODEL_CONFIGS)}"
         )
     model_cfg = MODEL_CONFIGS[model_key]
+    # Sampling parameters belong to the weights: the DP+EP case and the plain
+    # case over one checkpoint share them, and therefore share one golden.
+    generation_cfg = dict(
+        model_cfg.get("generation_config") or DEFAULT_GENERATION_CONFIG
+    )
 
     # -- resolve model ------------------------------------------------
     model_id = model_override or model_cfg["model_id"]
@@ -427,15 +677,18 @@ def run_accuracy_eval(  # noqa: C901
             raise RuntimeError("no CUDA device available")
         cap = torch.cuda.get_device_capability(0)
         chip = CAPABILITY_TO_CHIP.get((cap[0], cap[1]), DEFAULT_CHIP)
-    # Per-model TP override (e.g. DeepSeek-V4 o_groups=8 caps at TP=8).
-    tp = model_cfg.get("tp") or tensor_parallel_for_chip(chip)
+    # Per-model card count override (e.g. DeepSeek-V4 o_groups=8 caps TP at
+    # 8).  A recipe whose parallelism stays inside one process spends all of
+    # these cards on tensor parallel; a DP+EP recipe splits them across data
+    # parallel ranks instead.
+    ppu_count = model_cfg.get("ppu_count") or tensor_parallel_for_chip(chip)
 
     # -- guard: enough GPUs? ------------------------------------------
     import torch
 
-    if torch.cuda.device_count() < tp:
+    if torch.cuda.device_count() < ppu_count:
         raise RuntimeError(
-            f"need {tp} GPUs for chip {chip!r} but only "
+            f"need {ppu_count} GPUs for chip {chip!r} but only "
             f"{torch.cuda.device_count()} available"
         )
 
@@ -457,15 +710,28 @@ def run_accuracy_eval(  # noqa: C901
     # never leaks into the persisted golden contract.
     unique_served = unique_served_model_name(served_base)
     flags = list(extra_serve_flags or model_cfg.get("extra_flags", []))
-    log_path = wd / f"vllm_serve_{model_key}.log"
+    log_path = wd / f"vllm_serve_{case_id or model_key}.log"
 
     # -- start server -------------------------------------------------
+    # Built here as well as inside ``start_vllm_server`` so the golden records
+    # the args the process really ran with; a pure function yields the same
+    # argv from the same inputs.
+    serve_argv = build_serve_argv(
+        model_id,
+        served_model_name=unique_served,
+        port=port,
+        tp=ppu_count,
+        extra_flags=flags,
+        server_cmd=server_cmd,
+    )
     server, log_path = start_vllm_server(
         model_id,
         served_model_name=unique_served,
         port=port,
-        tp=tp,
+        tp=ppu_count,
         extra_flags=flags,
+        server_cmd=server_cmd,
+        server_env=server_env,
         log_path=log_path,
     )
     try:
@@ -474,6 +740,7 @@ def run_accuracy_eval(  # noqa: C901
             log_path,
             port=port,
             expected_served_name=unique_served,
+            timeout=_server_ready_timeout(server_env),
         )
         time.sleep(SERVER_POST_READY_SLEEP)
         # A readiness probe only proves the server was alive at the time it
@@ -487,6 +754,7 @@ def run_accuracy_eval(  # noqa: C901
             unique_served,
             port,
             gsm8k_path,
+            generation_config=generation_cfg,
             limit=limit,
             work_dir=wd / "evalscope",
         )
@@ -509,13 +777,8 @@ def run_accuracy_eval(  # noqa: C901
             "subset_list": ["main"],
             "num_expected": GSM8K_FULL_SIZE,
         }
-        srv_cfg: dict[str, Any] = {
-            "tensor_parallel_size": tp,
-            "gpu_memory_utilization": (DEFAULT_GPU_MEMORY_UTILIZATION),
-            "seed": DEFAULT_SEED,
-        }
+        srv_cfg: dict[str, Any] = describe_serving(serve_argv, ppu_count=ppu_count)
         tol = dict(DEFAULT_TOLERANCE)
-        tol["hard_floor"] = threshold
         record = build_accuracy_golden(
             model_key=model_key,
             chip=chip,
@@ -523,13 +786,16 @@ def run_accuracy_eval(  # noqa: C901
             evalscope_version=es_ver,
             dataset_cfg=ds_cfg,
             serving_cfg=srv_cfg,
+            generation_cfg=generation_cfg,
             score=score,
-            score_num=num,
+            # Correct answers, not samples asked: ``num`` is the sample count
+            # and the score is ``score_num / num``.
+            score_num=round(score * num),
             tolerance=tol,
         )
 
         # -- golden comparison ----------------------------------------
-        return _golden_compare(
+        result = _golden_compare(
             record=record,
             score=score,
             num=num,
@@ -542,6 +808,8 @@ def run_accuracy_eval(  # noqa: C901
             model_key=model_key,
             threshold=threshold,
         )
+        result["case_id"] = case_id or model_key
+        return result
     finally:
         stop_server(server)
 
@@ -560,7 +828,14 @@ def _golden_compare(
     model_key: str,
     threshold: float = DEFAULT_THRESHOLD,
 ) -> dict[str, Any]:
-    """Perform threshold check + optional golden comparison."""
+    """Perform the golden band check, or the threshold fallback.
+
+    ``threshold`` only governs a checkpoint that has no baseline yet. Once a
+    golden is committed it *is* the reference: a checkpoint whose golden lands
+    at 0.60 must gate against 0.60, not against a fallback number that was only
+    ever meant to stop a first run from being recorded far below anything
+    acceptable.
+    """
     status: str
     error_msg: str | None = None
 
@@ -579,7 +854,7 @@ def _golden_compare(
             "record": record,
         }
 
-    # --- Primary gate: score >= threshold --------------------------
+    # --- Threshold, used only where no golden can arbitrate --------------
     ok_thr, thr_err = check_score_threshold(score, threshold)
 
     if update_golden:
@@ -599,13 +874,20 @@ def _golden_compare(
         if not ok_id:
             status = "fail_identity"
             error_msg = id_err
-        elif not ok_thr:
-            status = "fail_threshold"
-            error_msg = thr_err
         else:
-            ok_g, acc_err = check_accuracy_golden(score, num, golden)
-            status = "pass" if ok_g else "fail_accuracy"
-            error_msg = acc_err
+            # A score recorded under different sampling parameters cannot
+            # arbitrate this run, so the contract is settled before the band:
+            # fail_config names the drifted knob instead of reporting the
+            # accuracy delta it caused.
+            ok_cfg, cfg_err = check_generation_config(golden, record["generation"])
+            if not ok_cfg:
+                status = "fail_config"
+                error_msg = cfg_err
+            else:
+                # The band replaces the threshold gate entirely here.
+                ok_g, acc_err = check_accuracy_golden(score, num, golden)
+                status = "pass" if ok_g else "fail_accuracy"
+                error_msg = acc_err
     elif not ok_thr:
         # No golden yet; threshold is the only gate.
         write_golden(record, pending_gf)
@@ -657,6 +939,33 @@ def main() -> None:
         choices=["auto", "810e", "890p"],
     )
     parser.add_argument(
+        "--case-id",
+        default=None,
+        help=(
+            "Catalog case identifier; labels the serve log and the run "
+            "report only. Golden identity stays keyed on --model-key, so "
+            "several cases over one checkpoint share one golden."
+        ),
+    )
+    parser.add_argument(
+        "--server-cmd",
+        default=None,
+        help=(
+            "JSON array holding the complete 'vllm serve' argv for this "
+            "case, with {model} / {port} / {served_name} placeholders. "
+            "Omit to use the built-in argument list."
+        ),
+    )
+    parser.add_argument(
+        "--server-env",
+        default=None,
+        help=(
+            "JSON object of extra environment variables for this case's "
+            "server process, e.g. a larger engine-ready timeout. Merged "
+            "over the inherited environment."
+        ),
+    )
+    parser.add_argument(
         "--update-golden",
         action="store_true",
         help="Rewrite the formal golden baseline",
@@ -686,10 +995,13 @@ def main() -> None:
 
     extra = args.extra_serve_flags.split() if args.extra_serve_flags else None
     wd = Path(args.work_dir) if args.work_dir else None
+    server_cmd = _parse_server_cmd(args.server_cmd)
+    server_env = _parse_server_env(args.server_env)
 
     result = run_accuracy_eval(
         args.model_key,
         model_override=args.model,
+        case_id=args.case_id,
         chip=args.chip,
         update_golden=args.update_golden,
         limit=args.limit,
@@ -698,6 +1010,8 @@ def main() -> None:
         port=args.port,
         served_model_name=args.served_model_name,
         extra_serve_flags=extra,
+        server_cmd=server_cmd,
+        server_env=server_env,
         golden_dir=Path(args.golden_dir) if args.golden_dir else None,
     )
 

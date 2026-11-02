@@ -1205,7 +1205,10 @@ def test_runtime_workflows_use_the_checked_in_docker_wrapper():
         model_step["run"]
         == 'bash "${PPU_CI_SOURCE_DIR}/scripts/ci/ppu_runtime_container.sh" model-test'
     )
-    assert model_step["env"]["PPU_CI_DEVICE_COUNT"] == "${{ matrix.model.tp }}"
+    assert model_step["env"]["PPU_CI_DEVICE_COUNT"] == "${{ matrix.model.ppu_count }}"
+    # Smoke cases keep their parallelism inside one process, so the tensor
+    # parallel size is the card count they asked for.
+    assert model_step["env"]["TP_SIZE"] == "${{ matrix.model.ppu_count }}"
     assert model_step["env"]["PPU_CI_REQUIRE_PR_ARTIFACT"] == "${{ inputs.pr_mode }}"
     assert pin_step["env"]["PPU_CI_SOURCE_DIR"] == "${{ steps.runtime.outputs.source }}"
     assert (
