@@ -4,8 +4,8 @@
 Covers ``patch/enhancement/qwen4_exp_ple.py``. Same two-tier design as
 ``test_quant_moe_patches.py``: it runs on a bare CPU runner with no vLLM
 (import + metadata shape + AST checks) and exercises the dispatch against stub
-upstreams, so the branch a ``CompressedTensorsConfig`` checkpoint takes is
-asserted rather than merely installed.
+upstreams, so the branch a ``CompressedTensorsConfig`` or ``Mxfp4Config``
+checkpoint takes is asserted rather than merely installed.
 
 The stub classes are rebuilt per test: ``install()`` patches them in place, and
 the framework's double-patch guard rejects a class that already carries a
@@ -33,6 +33,8 @@ REQUIRED_METADATA = ("reason", "affected_versions", "remove_when")
 _NGRAM = "vllm.models.qwen4_exp.common.ngram_embedding"
 _CT = "vllm.model_executor.layers.quantization.compressed_tensors.compressed_tensors"
 _CT_UTILS = "vllm.model_executor.layers.quantization.compressed_tensors.utils"
+_MXFP4 = "vllm.model_executor.layers.quantization.mxfp4"
+_QUANT_UTILS = "vllm.model_executor.layers.quantization.utils.quant_utils"
 
 # The prefix the caller builds (``f"{prefix}.ngram_embedding"``) and the shard
 # names a real fp8-channel checkpoint lists in ``quantization_config.ignore``.
@@ -97,7 +99,7 @@ def _register_chain(
 
 
 def _build_stubs() -> types.SimpleNamespace:
-    """Fresh stand-ins for the three upstream modules ``install()`` imports."""
+    """Fresh stand-ins for the five upstream modules ``install()`` imports."""
 
     class Qwen4ExpPLEUnquantizedEmbeddingMethod:
         """The bf16 PLE table."""
@@ -113,6 +115,21 @@ def _build_stubs() -> types.SimpleNamespace:
 
         def __init__(self, ignore: list[str] | None = None) -> None:
             self.ignore = list(ignore or [])
+            self.packed_modules_mapping: dict[str, list[str]] = {}
+
+    class Mxfp4Config:
+        """The MXFP4-expert / FP8-channelwise-dense config the pipeline emits.
+
+        ``ignored_layers`` is what SAIL's ``enhancement/mxfp4.py`` populates
+        from the checkpoint's ``ignore`` key. Upstream's own ``from_config``
+        returns ``cls()`` and drops the key, so ``None`` is also the shape a
+        checkpoint that genuinely quantizes the PLE table arrives in.
+        """
+
+        def __init__(self, ignored_layers: list[str] | None = None) -> None:
+            self.ignored_layers = (
+                None if ignored_layers is None else list(ignored_layers)
+            )
             self.packed_modules_mapping: dict[str, list[str]] = {}
 
     class SomeOtherConfig:
@@ -145,23 +162,40 @@ def _build_stubs() -> types.SimpleNamespace:
     class Qwen4ExpPLEEmbeddingMethod:
         from_quant_config = descriptor
 
+    # Which exclusion helper the patch consulted, so each family stays pinned
+    # to its own matcher rather than whichever one happens to be imported.
+    helper_calls: list[str] = []
+
     def should_ignore_layer(layer_name, ignore, fused_mapping) -> bool:
         """Enough of upstream's helper for a prefix naming no fused module.
 
         No defaults: the patch must pass ``ignore`` and ``fused_mapping``
         explicitly, and a stub stricter than upstream pins that call shape.
         """
+        helper_calls.append("should_ignore_layer")
         return layer_name is not None and layer_name in set(ignore)
+
+    def is_layer_skipped(prefix, ignored_layers, fused_mapping) -> bool:
+        """Enough of upstream's MXFP4-side helper for the same prefix.
+
+        Equally strict: ``fused_mapping`` has an upstream default the stub
+        omits, so the patch is pinned to passing the config's own mapping.
+        """
+        helper_calls.append("is_layer_skipped")
+        return prefix is not None and prefix in set(ignored_layers)
 
     return types.SimpleNamespace(
         unquantized=Qwen4ExpPLEUnquantizedEmbeddingMethod,
         fp8=Qwen4ExpPLEFp8EmbeddingMethod,
         fp8_config=Fp8Config,
         ct_config=CompressedTensorsConfig,
+        mxfp4_config=Mxfp4Config,
         other_config=SomeOtherConfig,
         embedding_method=Qwen4ExpPLEEmbeddingMethod,
         upstream_from_quant_config=descriptor,
         should_ignore_layer=should_ignore_layer,
+        is_layer_skipped=is_layer_skipped,
+        helper_calls=helper_calls,
     )
 
 
@@ -182,6 +216,14 @@ def _install(monkeypatch: pytest.MonkeyPatch) -> types.SimpleNamespace:
     ct_utils = types.ModuleType(_CT_UTILS)
     ct_utils.should_ignore_layer = stubs.should_ignore_layer
     _register_chain(monkeypatch, _CT_UTILS, ct_utils)
+
+    mxfp4 = types.ModuleType(_MXFP4)
+    mxfp4.Mxfp4Config = stubs.mxfp4_config
+    _register_chain(monkeypatch, _MXFP4, mxfp4)
+
+    quant_utils = types.ModuleType(_QUANT_UTILS)
+    quant_utils.is_layer_skipped = stubs.is_layer_skipped
+    _register_chain(monkeypatch, _QUANT_UTILS, quant_utils)
 
     stubs.module = _leaf()
     stubs.module.install()
@@ -224,6 +266,7 @@ def test_metadata_shape() -> None:
     assert ">=" in affected and "<" in affected, target
     assert remove_when.strip().lower() != "todo", target
     assert "CompressedTensorsConfig" in reason
+    assert "Mxfp4Config" in reason
 
 
 def test_no_top_level_vllm_import() -> None:
@@ -332,6 +375,7 @@ def test_compressed_tensors_naming_the_table_directly_is_honoured(
     stubs = _install(monkeypatch)
     config = stubs.ct_config(ignore=[PREFIX, "lm_head"])
     assert isinstance(stubs.dispatch(config, PREFIX), stubs.unquantized)
+    assert stubs.helper_calls == ["should_ignore_layer"]
 
 
 def test_compressed_tensors_that_quantizes_the_table_still_raises(
@@ -347,6 +391,51 @@ def test_compressed_tensors_that_quantizes_the_table_still_raises(
         stubs.dispatch(config, PREFIX)
 
 
+def test_mxfp4_with_ignored_shards_loads_unquantized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The second reported failure: an MXFP4 checkpoint excluding the table.
+
+    Regression guard for ``NotImplementedError: Qwen4Exp PLE embedding does not
+    support quantization config Mxfp4Config``. The exclusion list arrives under
+    a different attribute name than the compressed-tensors one.
+    """
+    stubs = _install(monkeypatch)
+    config = stubs.mxfp4_config(ignored_layers=_ignored_shard_names())
+    assert isinstance(stubs.dispatch(config, PREFIX), stubs.unquantized)
+
+
+def test_mxfp4_naming_the_table_directly_is_honoured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """That path runs through ``is_layer_skipped``, not ``should_ignore_layer``."""
+    stubs = _install(monkeypatch)
+    config = stubs.mxfp4_config(ignored_layers=[PREFIX, "lm_head"])
+    assert isinstance(stubs.dispatch(config, PREFIX), stubs.unquantized)
+    assert stubs.helper_calls == ["is_layer_skipped"]
+
+
+def test_mxfp4_that_quantizes_the_table_still_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``ignored_layers=None`` means the table is quantized, not excluded.
+
+    It is both the shape upstream's ``Mxfp4Config.from_config`` leaves behind
+    when it discards the checkpoint's ``ignore`` key, and the shape of a
+    checkpoint that genuinely quantizes the PLE table — qwen4-max declares
+    ``ple_quant_scheme: fp8_pertensor`` and excludes nothing. Either way the
+    patch must not guess that the table is in ``params_dtype``.
+    """
+    stubs = _install(monkeypatch)
+    configs = (
+        stubs.mxfp4_config(),
+        stubs.mxfp4_config(ignored_layers=["lm_head"]),
+    )
+    for config in configs:
+        with pytest.raises(NotImplementedError, match="Mxfp4Config"):
+            stubs.dispatch(config, PREFIX)
+
+
 def test_declared_fp8_embedding_dtype_keeps_upstream_precedence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -356,8 +445,11 @@ def test_declared_fp8_embedding_dtype_keeps_upstream_precedence(
     even when the ignore list would otherwise rescue it.
     """
     stubs = _install(monkeypatch)
-    config = stubs.ct_config(ignore=_ignored_shard_names())
-    assert isinstance(stubs.dispatch(config, PREFIX, "float8_e4m3fn"), stubs.fp8)
+    for config in (
+        stubs.ct_config(ignore=_ignored_shard_names()),
+        stubs.mxfp4_config(ignored_layers=_ignored_shard_names()),
+    ):
+        assert isinstance(stubs.dispatch(config, PREFIX, "float8_e4m3fn"), stubs.fp8)
 
 
 @pytest.mark.parametrize("use_fp8_config", [False, True])
@@ -377,3 +469,21 @@ def test_unknown_families_are_not_whitelisted(
     stubs = _install(monkeypatch)
     with pytest.raises(NotImplementedError, match="SomeOtherConfig"):
         stubs.dispatch(stubs.other_config(), PREFIX)
+
+
+def test_rescue_is_keyed_on_family_not_on_duck_typing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A foreign config carrying a matching ``ignore`` list is still rejected.
+
+    Without the family gate the rescue would read whichever attribute happened
+    to exist, silently broadening it to every quantization config that ever
+    grows an exclusion list.
+    """
+    stubs = _install(monkeypatch)
+    config = stubs.other_config()
+    config.ignore = _ignored_shard_names()
+    config.ignored_layers = _ignored_shard_names()
+    config.packed_modules_mapping = {}
+    with pytest.raises(NotImplementedError, match="SomeOtherConfig"):
+        stubs.dispatch(config, PREFIX)

@@ -490,6 +490,59 @@ def test_apply_vllm_mapper_remaps_channelwise_on_ppu(
     _Platform.ppu = True
 
 
+def test_apply_vllm_mapper_remaps_ignored_layers_on_every_platform(
+    monkeypatch: pytest.MonkeyPatch, mxfp4_module
+) -> None:
+    """Upstream's ``Mxfp4Config`` inherits the no-op ``apply_vllm_mapper``.
+
+    Left alone, ``ignored_layers`` keeps checkpoint naming
+    (``model.language_model.*``) while the module tree uses vLLM naming
+    (``language_model.model.*``), so ``is_layer_skipped`` never matches and
+    neither the ignored ``RoutedExperts`` routing nor the Qwen4Exp PLE rescue
+    in ``enhancement/qwen4_exp_ple.py`` can fire. Unlike
+    ``fp8_channelwise_layers``, the list is not a PPU extension, so it is
+    rewritten on every platform.
+    """
+    _, modules = _build_stub_vllm(monkeypatch)
+    mxfp4_module.install()
+    Mxfp4Config = modules["quant_mxfp4"].Mxfp4Config
+
+    class Mapper:
+        @staticmethod
+        def apply_list(layers):
+            return [
+                name.replace("model.language_model.", "language_model.model.")
+                for name in layers
+            ]
+
+    ignored = ["model.language_model.layers.1.mlp.experts", "lm_head"]
+    expected = ["language_model.model.layers.1.mlp.experts", "lm_head"]
+    for ppu in (True, False):
+        _Platform.ppu = ppu
+        config = Mxfp4Config(ignored_layers=list(ignored))
+        config.apply_vllm_mapper(Mapper())
+        assert config.ignored_layers == expected
+    _Platform.ppu = True
+
+
+def test_apply_vllm_mapper_tolerates_an_absent_ignore_list(
+    monkeypatch: pytest.MonkeyPatch, mxfp4_module
+) -> None:
+    """Upstream's ``from_config`` returns ``cls()``, so ``None`` is the norm."""
+    _, modules = _build_stub_vllm(monkeypatch)
+    mxfp4_module.install()
+    Mxfp4Config = modules["quant_mxfp4"].Mxfp4Config
+
+    class Mapper:
+        @staticmethod
+        def apply_list(layers):
+            raise AssertionError("called with no list to map")
+
+    config = Mxfp4Config()
+    config.apply_vllm_mapper(Mapper())
+    assert config.ignored_layers is None
+
+
 def test_method_initialization_preserves_upstream_factory(
     monkeypatch: pytest.MonkeyPatch, mxfp4_module
 ) -> None:
