@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Keep SM10x tuning separate from PPU and other packed decode launches."""
+"""Keep CUDA-specific tuning separate from PPU packed decode launches."""
 
 from __future__ import annotations
 
@@ -18,7 +18,12 @@ UPSTREAM = "vllm/third_party/flash_linear_attention/ops/fused_recurrent.py"
 CASES = [
     ("ppu", 80, 16, "fp32", 128, 32),
     ("ppu", 89, 17, "fp32", 128, 32),
-    ("cuda", 90, 16, "fp32", 128, 32),
+    ("cuda", 90, 16, "fp32", 128, 4),
+    ("cuda", 90, 17, "fp32", 128, 4),
+    ("cuda", 90, 16, "bf16", 128, 32),
+    ("cuda", 90, 17, "bf16", 128, 32),
+    ("cuda", 90, 0, "fp32", 128, 4),
+    ("ppu", 89, 0, "fp32", 128, 32),
     ("cuda", 100, 16, "fp32", 128, 4),
     ("cuda", 100, 17, "fp32", 128, 8),
     ("cuda", 100, 16, "bf16", 128, 4),
@@ -59,6 +64,10 @@ def run_decode(path, modules, device, capability, batch, dtype, width, expected)
         probes.append((value, device_id))
         return capability // 10 == value // 10
 
+    def exact(value, *, device_id):
+        probes.append((value, device_id))
+        return capability == value
+
     modules(
         "vllm_sail.attention.pla_decode",
         get_sail_cuda_pla_k_last_packed=lambda: None,
@@ -67,6 +76,7 @@ def run_decode(path, modules, device, capability, batch, dtype, width, expected)
         is_cuda=lambda: device in ("cuda", "ppu"),
         is_ppu=lambda: device == "ppu",
         is_device_capability_family=family,
+        is_device_capability=exact,
     )
     namespace = {
         "torch": NS(float32="fp32", int32="int32"),
@@ -100,7 +110,14 @@ def run_decode(path, modules, device, capability, batch, dtype, width, expected)
     assert kwargs["scale"] == 0.25 and kwargs["USE_QK_L2NORM_IN_KERNEL"] is True
     assert kwargs["SPLIT_BATCH_HEAD_GRID"] is split
     assert kwargs["num_warps"] == 1 and kwargs["num_stages"] == 3
-    assert probes == ([(100, 3)] if width == 128 and platform.is_cuda() else [])
+    assert all(device_id == 3 for _, device_id in probes)
+
+
+@pytest.mark.parametrize("capability", [90, 100])
+def test_ppu_vendor_keeps_its_fallback_tile_under_cuda_capability_aliases(
+    modules, capability
+):
+    run_decode(PATCH, modules, "ppu", capability, 16, "fp32", 128, 32)
 
 
 @pytest.mark.parametrize("device,capability,batch,dtype,width,expected", CASES)

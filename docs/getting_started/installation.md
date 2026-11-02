@@ -73,6 +73,11 @@ recorded in [the verified pin](../../.github/vllm-main-verified.commit) and
 [kernel manifest](../../csrc/upstream/manifest.toml); both records must agree.
 **v0.32.0** is the release baseline for this line.
 
+For a commit-pinned main build, the full upstream SHA establishes compatibility.
+The numeric prefix produced by setuptools-scm or `git describe` can depend on
+the tags present in the build checkout; it does not change the supported release
+range. Keep the full SHA in the wheel version and leave version overrides unset.
+
 Use a matching wheel supplied with your PPU environment, or build that upstream
 source pin. For a source build, prepare vLLM's build and runtime dependencies
 using the SDK's package constraints, including the Rust toolchain required by
