@@ -152,7 +152,19 @@ def test_kernel_warmup_delegates_off_ppu_and_runs_ppu_warmup_on_ppu(
         lambda worker, **kwargs: calls.append("upstream"),
     )
     worker = types.SimpleNamespace(
-        model_runner=types.SimpleNamespace(),
+        use_v2_model_runner=True,
+        model_runner=types.SimpleNamespace(
+            jit_warmup_registry=None, is_pooling_model=True, attn_groups=[]
+        ),
+        vllm_config=types.SimpleNamespace(
+            model_config=types.SimpleNamespace(),
+            kernel_config=types.SimpleNamespace(
+                enable_jit_warmup=False,
+                enable_cutedsl_warmup=False,
+                enable_flashinfer_autotune=False,
+            ),
+            compilation_config=types.SimpleNamespace(cudagraph_capture_sizes=[]),
+        ),
         get_model=lambda: calls.append("get_model") or object(),
         scheduler_config=types.SimpleNamespace(max_num_batched_tokens=512),
     )
@@ -163,6 +175,25 @@ def test_kernel_warmup_delegates_off_ppu_and_runs_ppu_warmup_on_ppu(
     kw_patch.kernel_warmup(worker)
     assert calls == ["upstream"]
 
+    import vllm.model_executor.warmup.kernel_warmup as provider
+    import vllm.model_executor.warmup.step5_dsa_warmup as step5
+
+    # Keep the real PPU body: isolate only expensive external callbacks.
+    monkeypatch.setattr(
+        provider, "qwen_triton_warmup", lambda *args: calls.append("upstream")
+    )
+    for name in (
+        "qwen_vl_triton_warmup",
+        "mamba_triton_warmup",
+        "_warmup_gemm_rs_ar",
+        "flashinfer_sparse_mla_decode_autotune_warmup",
+        "deepseek_v4_sparse_mla_attention_warmup",
+        "b12x_warmup",
+    ):
+        monkeypatch.setattr(provider, name, lambda *args: None)
+    monkeypatch.setattr(step5, "step5_dsa_warmup", lambda worker: None)
+    monkeypatch.setattr(provider, "is_deep_gemm_supported", lambda: False)
+    monkeypatch.setattr(provider.envs, "VLLM_ALLREDUCE_USE_FLASHINFER_PCIE_IPC", False)
     monkeypatch.setattr(type(current_platform), "is_ppu", lambda self: True)
     monkeypatch.setenv("VLLM_DEEP_GEMM_WARMUP", "skip")
     calls.clear()

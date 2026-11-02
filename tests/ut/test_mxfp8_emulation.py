@@ -207,6 +207,17 @@ class Tensor:
     def contiguous(self):
         return self
 
+    def numel(self):
+        import math
+
+        return math.prod(self.shape)
+
+    def untyped_storage(self):
+        return SimpleNamespace(data_ptr=lambda: id(self))
+
+    def storage_offset(self):
+        return 0
+
     def __getitem__(self, slices):
         return Tensor(tuple(s.stop for s in slices), self.dtype)
 
@@ -252,11 +263,9 @@ def test_upstream_dequantizes_at_load_or_per_forward(
         "MXFP8_SCALE_DTYPE": "uint8",
         "dequant_mxfp8_to_bf16": dequant,
     }
-    function(
-        upstream_source_root / "vllm/model_executor/utils.py",
-        "replace_parameter",
-        namespace,
-    )
+    utils = upstream_source_root / "vllm/model_executor/utils.py"
+    for name in ("_extent", "_in_own_storage", "replace_parameter"):
+        function(utils, name, namespace)
     path = (
         upstream_source_root / "vllm/model_executor/kernels/linear/mxfp8/emulation.py"
     )

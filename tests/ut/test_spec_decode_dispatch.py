@@ -169,7 +169,12 @@ def test_all_sampler_kernel_calls_bind_the_upstream_draft_shard_contract(
     sampler = function(
         "vllm_sail/patch/enhancement/runtime.py", "rejection_sample", namespace
     )
-    kwargs = {} if shards is None else {"draft_logits_num_shards": shards}
+    # A replicated cache has no mapping. Sharded rows are assigned explicitly
+    # and no longer derivable by dividing a request-state slot by shard count.
+    mapping = None if shards is None else Tensor(32, dtype="int32")
+    draft = Tensor(8, 7, 129)
+    cache = None if mode == "no-draft" else NS(values=draft, row_mapping=mapping)
+    kwargs = {}
     if mode == "block":
         kwargs["use_block_verification"] = True
     elif mode == "watermark":
@@ -185,7 +190,7 @@ def test_all_sampler_kernel_calls_bind_the_upstream_draft_shard_contract(
         kwargs["synthetic_conditional_rates"] = Tensor(7)
     sample, count = sampler(
         Logits(13, 129),
-        None if mode == "no-draft" else Tensor(8, 7, 129),
+        cache,
         Tensor(13),
         Tensor(4),
         Tensor(13),
@@ -201,6 +206,8 @@ def test_all_sampler_kernel_calls_bind_the_upstream_draft_shard_contract(
     assert set(calls) == expected
     for symbol, (bound, _) in calls.items():
         if symbol != "_insert_resampled_kernel":
-            assert bound["DRAFT_LOGITS_NUM_SHARDS"] == (shards or 1)
+            assert bound["draft_logits_row_mapping_ptr"] is (
+                None if cache is None else mapping
+            )
     assert calls["_insert_resampled_kernel"][1]["num_warps"] == 1
     assert sample.shape == (3, 8) and count.shape == (3,)

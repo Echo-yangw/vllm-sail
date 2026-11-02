@@ -18,7 +18,7 @@ schema = 1
 
 # The exact upstream vLLM tag the corpus is translated from. Bumping this means
 # re-running tools/port_upstream_kernels.py and reviewing the diff.
-upstream_ref = "ee9ba37199338cf31306a2ec27ec9afa41efc09e"
+upstream_ref = "4440f0e2632abacbefd7690338b9eea91055034b"
 
 # Compiled tiers, in the order CMake receives them. `x` must never appear here.
 # Must stay above [tiers]: a bare key after a table header belongs to that table.
@@ -78,6 +78,14 @@ _moe_C_stable_libtorch = "_upstream_moe_C"
 # These exact anchors run after sailify; HG compilation defines __HGGCCC__.
 [overlay.replace_text."csrc/fused_minimax_m3_qknorm_rope_kv_insert_kernel.cu"]
 "#ifndef USE_ROCM\n  // PDL: enable programmatic stream serialization" = "#if !defined(USE_ROCM) && !defined(__HGGCCC__)\n  // PDL: enable programmatic stream serialization"
+# Keep PPU on the existing ordinary kernel. The new NVIDIA row-group path
+# uses cp.async and extended launches; DSpark context has no compiled PPU op.
+"namespace rg {" = "#if !defined(__HGGCCC__)\nnamespace rg {"
+"}  // namespace rg\n#endif  // USE_ROCM" = "}  // namespace rg\n#endif  // !__HGGCCC__\n#endif  // USE_ROCM"
+"#ifndef USE_ROCM\n// q heads per q warp:" = "#if !defined(USE_ROCM) && !defined(__HGGCCC__)\n// q heads per q warp:"
+"constexpr int kCtxLanesPerRow = 8;" = "#if !defined(__HGGCCC__)\nconstexpr int kCtxLanesPerRow = 8;"
+"#endif  // !USE_ROCM\n\n}  // namespace minimax_m3_fused_ops" = "#endif  // !__HGGCCC__\n#endif  // !USE_ROCM\n\n}  // namespace minimax_m3_fused_ops"
+"#ifdef USE_ROCM\n  STD_TORCH_CHECK(false, \"fused_minimax_m3_dspark_context_kv is CUDA-only\");" = "#if defined(USE_ROCM) || defined(__HGGCCC__)\n  STD_TORCH_CHECK(false, \"fused_minimax_m3_dspark_context_kv is CUDA-only\");"
 
 [overlay.replace_text."csrc/fused_kimi_k3_mla_key_concat_kv_cache_kernel.cu"]
 "#ifndef USE_ROCM\n  static int const sm_version = getSMVersion();" = "#if !defined(USE_ROCM) && !defined(__HGGCCC__)\n  static int const sm_version = getSMVersion();"
