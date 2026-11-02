@@ -23,7 +23,7 @@ fingerprint = "sha256:34692ac48c0dc502cf39ea0a331e6bc0773daa4ce33d98bfae61cdedae
 symbol = "vllm.platforms.interface.Platform"
 kind = "class"
 present = true
-fingerprint = "sha256:377cba3d9e9319aa2477d33ccd21308c80f94a71d0a914c3e43fa0ba0b100564"
+fingerprint = "sha256:2cfe5cbd56f1c5345a190ae29b0eb8354a84d5a0e67e6030f6a03328c3c1730f"
 
 [[key_interface]]
 symbol = "vllm.platforms.cuda.NvmlCudaPlatform"

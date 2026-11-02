@@ -6,7 +6,7 @@
 # tiers. vllm_sail/native/stubs.py registers each one so a call fails
 # with a named NotImplementedError instead of an AttributeError, and so
 # capability probes answer False instead of raising.
-# Upstream vLLM 43111fd1f0c3135ff671e25e2e85238aa05743d0; compiled tiers a.
+# Upstream vLLM ee9ba37199338cf31306a2ec27ec9afa41efc09e; compiled tiers a.
 
 [[op]]
 namespace = "_C_custom_ar"
@@ -75,7 +75,7 @@ reason = "not declared in csrc/upstream/manifest.toml"
 [[op]]
 namespace = "_C_cache_ops"
 name = "cp_gather_and_upconvert_nvfp4_kv_cache"
-schema = "cp_gather_and_upconvert_nvfp4_kv_cache(Tensor src_cache, Tensor! dst, Tensor block_table, Tensor workspace_starts, int batch_size) -> ()"
+schema = "cp_gather_and_upconvert_nvfp4_kv_cache(Tensor src_cache, Tensor! dst, Tensor block_table, Tensor workspace_starts, int batch_size, Tensor? seq_starts=None) -> ()"
 kind = "compute"
 tier = "unclaimed"
 reason = "not declared in csrc/upstream/manifest.toml"
