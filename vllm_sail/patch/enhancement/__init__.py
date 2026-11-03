@@ -25,6 +25,7 @@ from vllm_sail.patch.enhancement import fused_moe_ppu
 from vllm_sail.patch.enhancement import int8_quant  # noqa: F401
 from vllm_sail.patch.enhancement import kernel_warmup  # noqa: F401
 from vllm_sail.patch.enhancement import modular_kernel  # noqa: F401
+from vllm_sail.patch.enhancement import online_quantization_dtype  # noqa: F401
 from vllm_sail.patch.enhancement import quant_keys  # noqa: F401
 from vllm_sail.patch.enhancement import tuned_config_lookup  # noqa: F401
 from vllm_sail.patch.enhancement import models  # noqa: F401

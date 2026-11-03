@@ -154,7 +154,9 @@ def model_init(
     decoder_layer_type: type = Qwen3MoeDecoderLayer,
 ):
     mix_layer = _mix_layers(vllm_config.model_config.hf_text_config)
-    if not mix_layer:
+    # PPU MODIFICATION: begin — conversion owns source/target layer selection.
+    conversion = getattr(vllm_config.quant_config, "handles_source_mixed_layers", False)
+    if not mix_layer or conversion:
         _upstream_model_init(
             self,
             vllm_config=vllm_config,
@@ -162,6 +164,7 @@ def model_init(
             decoder_layer_type=decoder_layer_type,
         )
         return
+    # PPU MODIFICATION: end
 
     # PPU MODIFICATION: begin — per-layer quant override (fork's create_layer).
     # Upstream calls decoder_layer_type(vllm_config=..., prefix=...), so the

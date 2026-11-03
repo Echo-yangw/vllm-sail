@@ -1,0 +1,23 @@
+{
+  "description": "MiniMax-M2.5 recipe from QLean 0.2.0",
+  "model_patterns": [
+    "*MiniMax-M2.5*",
+    "*/MiniMax-M2.5*",
+    "*MiniMax_M2_5*"
+  ],
+  "ignored_layers": [
+    "re:.*lm_head",
+    "re:.*embed_tokens",
+    "re:.*gate.*"
+  ],
+  "mix_layers": [],
+  "schema_version": 1,
+  "quantization": "w8a8_dynamic_token_symmetric_channel",
+  "id": "minimax_m2_5",
+  "model_constraints": {
+    "model_types": [
+      "minimax_m2"
+    ],
+    "text_config": {}
+  }
+}
