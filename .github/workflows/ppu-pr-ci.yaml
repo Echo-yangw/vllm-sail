@@ -55,6 +55,14 @@ jobs:
           CI_TRUSTED_USERS: ${{ vars.CI_TRUSTED_USERS }}
         run: python -m scripts.ci.ppu_ci_command validate
 
+  cpu:
+    needs: validate
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ut.yaml
+    with:
+      pr_head_sha: ${{ inputs.head_sha }}
+
   ppu:
     needs: validate
     permissions:
@@ -69,7 +77,7 @@ jobs:
       wheel_source_sha: ${{ needs.validate.outputs.wheel_source_sha }}
 
   report:
-    needs: [validate, ppu]
+    needs: [validate, cpu, ppu]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

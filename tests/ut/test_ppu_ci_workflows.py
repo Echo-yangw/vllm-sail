@@ -3,6 +3,7 @@ import itertools
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -157,11 +158,24 @@ def test_executor_uses_only_dispatch_with_a_stable_request_identity():
         "cancel-in-progress": False,
         "queue": "max",
     }
-    assert set(config["jobs"]) == {"validate", "ppu", "report"}
+    assert set(config["jobs"]) == {
+        "validate",
+        "cpu",
+        "ppu",
+        "report",
+    }
 
 
 def test_executor_separates_read_only_pr_execution_and_always_reporting():
     jobs = workflow("ppu-pr-ci.yaml")["jobs"]
+    for lane, target in (("cpu", "ut.yaml"),):
+        job = jobs[lane]
+        assert job["needs"] == "validate"
+        assert job["uses"] == f"./.github/workflows/{target}"
+        assert job["permissions"] == {"contents": "read"}
+        assert job["with"] == {"pr_head_sha": "${{ inputs.head_sha }}"}
+        assert "secrets" not in job
+        assert "if" not in job  # CPU checks also run when skip_ppu is true.
     ppu = jobs["ppu"]
     assert ppu["needs"] == "validate"
     assert ppu["uses"] == "./.github/workflows/ppu-build-and-test.yaml"
@@ -195,7 +209,7 @@ def test_executor_separates_read_only_pr_execution_and_always_reporting():
     }
     report = jobs["report"]
     assert report["if"] == "always()"
-    assert report["needs"] == ["validate", "ppu"]
+    assert report["needs"] == ["validate", "cpu", "ppu"]
     assert all("always()" in step["if"] for step in report["steps"])
     step = next(step for step in report["steps"] if "run" in step)
     assert step["env"]["NEEDS"] == "${{ toJSON(needs) }}"
@@ -698,6 +712,8 @@ def test_workflow_filenames_distinguish_reusable_calls_from_entrypoints():
         triggers = workflow(path.name)[True]
         if path.name == "ppu-build-and-test.yaml":
             assert set(triggers) == {"workflow_call", "pull_request"}
+        elif path.name == "ut.yaml":
+            assert set(triggers) == {"workflow_call", "workflow_dispatch"}
         elif path.name.startswith("_"):
             assert set(triggers) == {"workflow_call"}, path.name
         else:
@@ -998,13 +1014,135 @@ def test_retry_reuses_build_artifacts_but_keeps_pin_diagnostics_per_attempt():
     )
 
 
-def test_cpu_checks_still_run_automatically_with_read_only_checkout():
+def test_cpu_checks_are_on_demand_with_read_only_exact_checkout():
     config = workflow("ut.yaml")
-    assert set(config[True]) == {"pull_request", "push", "workflow_dispatch"}
+    assert set(config[True]) == {"workflow_call", "workflow_dispatch"}
+    assert config[True]["workflow_call"]["inputs"]["pr_head_sha"] == {
+        "description": "Exact PR head SHA under test",
+        "type": "string",
+        "required": True,
+    }
     assert config["permissions"] == {"contents": "read"}
+    assert config["cache-mode"] == "none"
+    assert config["env"]["PIP_NO_CACHE_DIR"] == "1"
+    if "concurrency" in config:
+        assert config["concurrency"]["group"].endswith("${{ github.run_id }}")
     for job in config["jobs"].values():
+        checkout = checkouts(job)[0]
+        assert checkout["with"]["ref"] == EXPECTED_SHA
         for checkout in checkouts(job):
             assert checkout["with"]["persist-credentials"] is False
+        assert not any(step.get("with", {}).get("cache") for step in job["steps"])
+        verify = next(
+            step
+            for step in job["steps"]
+            if step.get("name") == "Verify the tested checkout"
+        )
+        assert verify["env"]["EXPECTED_SHA"] == EXPECTED_SHA
+
+
+def test_cpu_pipeline_runs_all_phases_on_one_runner():
+    jobs = workflow("ut.yaml")["jobs"]
+    assert set(jobs) == {"cpu-tests"}
+    job = jobs["cpu-tests"]
+    assert "strategy" not in job and job["runs-on"] == "ubuntu-latest"
+    steps = job["steps"]
+    setup = next(
+        step for step in steps if step.get("uses") == "actions/setup-python@v5"
+    )
+    assert setup["with"]["python-version"].split() == ["3.10", "3.11", "3.12", "3.13"]
+    commands = [
+        shlex.split(step["run"])[3:]
+        for step in steps
+        if "-m scripts.ci.cpu_tests " in step.get("run", "")
+    ]
+    assert [args[0] for args in commands] == ["unit"] * 4 + ["source", "reuse"]
+    assert [args[args.index("--version") + 1] for args in commands[:4]] == [
+        "3.10",
+        "3.11",
+        "3.12",
+        "3.13",
+    ]
+    upstream = [
+        checkout
+        for checkout in checkouts(job)
+        if checkout.get("with", {}).get("repository") == "vllm-project/vllm"
+    ]
+    assert len(upstream) == 1
+    uploads = [
+        step for step in steps if step.get("uses") == "codecov/codecov-action@v5"
+    ]
+    assert {step["with"]["flags"] for step in uploads} == {
+        f"python-{version}" for version in ("3.10", "3.11", "3.12", "3.13")
+    }
+
+
+@pytest.mark.parametrize("ready", ["success", "failure", "skipped"])
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_cpu_phases_continue_after_test_failures_but_require_checkout(ready, cancelled):
+    steps = workflow("ut.yaml")["jobs"]["cpu-tests"]["steps"]
+    for step in steps:
+        if "-m scripts.ci.cpu_tests " not in step.get("run", ""):
+            continue
+        context = {
+            "steps.workspace.outcome": ready,
+            "steps.upstream_verify.outcome": ready,
+            "steps.ut310.outcome": "failure",
+        }
+        condition = step["if"].replace("cancelled()", str(cancelled))
+        assert expression(condition, context) is (ready == "success" and not cancelled)
+        assert "continue-on-error" not in step
+
+
+@pytest.mark.parametrize("matches", [True, False])
+def test_cpu_checkout_verification_rejects_wrong_revision(matches, tmp_path):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=CI",
+            "-c",
+            "user.email=ci@example.com",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "fixture",
+        ],
+        cwd=tmp_path,
+        check=True,
+    )
+    sha = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True
+    ).strip()
+    for job in workflow("ut.yaml")["jobs"].values():
+        verify = next(
+            step
+            for step in job["steps"]
+            if step.get("name") == "Verify the tested checkout"
+        )
+        result = subprocess.run(
+            ["bash", "-e", "-c", verify["run"]],
+            cwd=tmp_path,
+            env={**os.environ, "EXPECTED_SHA": sha if matches else "0" * 40},
+        )
+        assert (result.returncode == 0) is matches
+
+
+def test_upstream_reuse_cpu_lane_is_on_demand_and_keeps_nightly_ppu():
+    config = workflow("upstream-reuse.yaml")
+    assert set(config[True]) == {"workflow_dispatch", "schedule"}
+    jobs = config["jobs"]
+    cpu = jobs["cpu-reuse"]
+    assert cpu["uses"] == "./.github/workflows/ut.yaml"
+    assert cpu["with"] == {"pr_head_sha": "${{ github.sha }}"}
+    assert cpu["permissions"] == {"contents": "read"}
+    assert "secrets" not in cpu
+    for event in ("workflow_dispatch", "schedule"):
+        context = {"github.event_name": event}
+        assert expression(cpu["if"], context) is (event == "workflow_dispatch")
+        for stage in ("resolve-build", "nightly-ppu-reuse"):
+            assert expression(jobs[stage]["if"], context)
 
 
 def test_ops_partial_retry_downloads_diagnostics_from_successful_previous_attempt():

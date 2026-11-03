@@ -1,82 +1,134 @@
-name: Unit tests
+name: CPU tests
 
 on:
-  pull_request:
-  push:
-    branches: [main, master]
+  workflow_call:
+    inputs:
+      pr_head_sha:
+        description: Exact PR head SHA under test
+        type: string
+        required: true
   workflow_dispatch:
 
 permissions:
   contents: read
+cache-mode: none
+
+env:
+  PIP_NO_CACHE_DIR: "1"
 
 concurrency:
-  group: ut-${{ github.event.pull_request.number || github.ref }}
+  group: ut-${{ github.run_id }}
   cancel-in-progress: true
 
 jobs:
-  cpu-unit-tests:
-    name: CPU UT (Python ${{ matrix.python-version }})
+  cpu-tests:
+    name: CPU tests
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.pr_head_sha || github.sha }}
           persist-credentials: false
+      - name: Verify the tested checkout
+        env:
+          EXPECTED_SHA: ${{ inputs.pr_head_sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
-          cache: pip
-      - name: Install CPU-only test tooling
-        run: python -m pip install -r requirements/dev.txt
-      - name: Run unit tests without vLLM, torch, or hardware
-        run: >-
-          python -m pytest tests/ut -q
-          --cov=vllm_sail --cov-branch --cov-report=term-missing
-          --cov-report=xml
-      - name: Upload coverage
+          python-version: |
+            3.10
+            3.11
+            3.12
+            3.13
+      - name: Prepare isolated CPU environments
+        id: workspace
+        run: echo "CPU_TEST_ROOT=$(mktemp -d "${RUNNER_TEMP}/cpu-tests.XXXXXX")" >> "$GITHUB_ENV"
+
+      - name: CPU UT (Python 3.10)
+        id: ut310
+        if: ${{ !cancelled() && steps.workspace.outcome == 'success' }}
+        timeout-minutes: 20
+        run: python -m scripts.ci.cpu_tests unit --version 3.10 --work-dir "$CPU_TEST_ROOT"
+      - name: CPU UT (Python 3.11)
+        id: ut311
+        if: ${{ !cancelled() && steps.workspace.outcome == 'success' }}
+        timeout-minutes: 20
+        run: python -m scripts.ci.cpu_tests unit --version 3.11 --work-dir "$CPU_TEST_ROOT"
+      - name: CPU UT (Python 3.12)
+        id: ut312
+        if: ${{ !cancelled() && steps.workspace.outcome == 'success' }}
+        timeout-minutes: 20
+        run: python -m scripts.ci.cpu_tests unit --version 3.12 --work-dir "$CPU_TEST_ROOT"
+      - name: CPU UT (Python 3.13)
+        id: ut313
+        if: ${{ !cancelled() && steps.workspace.outcome == 'success' }}
+        timeout-minutes: 20
+        run: python -m scripts.ci.cpu_tests unit --version 3.13 --work-dir "$CPU_TEST_ROOT"
+
+      - name: Upload Python 3.10 coverage
+        if: ${{ !cancelled() && steps.ut310.outcome == 'success' }}
         uses: codecov/codecov-action@v5
         with:
-          files: coverage.xml
-          flags: python-${{ matrix.python-version }}
+          files: ${{ env.CPU_TEST_ROOT }}/unit-3.10/coverage.xml
+          flags: python-3.10
+          fail_ci_if_error: false
+      - name: Upload Python 3.11 coverage
+        if: ${{ !cancelled() && steps.ut311.outcome == 'success' }}
+        uses: codecov/codecov-action@v5
+        with:
+          files: ${{ env.CPU_TEST_ROOT }}/unit-3.11/coverage.xml
+          flags: python-3.11
+          fail_ci_if_error: false
+      - name: Upload Python 3.12 coverage
+        if: ${{ !cancelled() && steps.ut312.outcome == 'success' }}
+        uses: codecov/codecov-action@v5
+        with:
+          files: ${{ env.CPU_TEST_ROOT }}/unit-3.12/coverage.xml
+          flags: python-3.12
+          fail_ci_if_error: false
+      - name: Upload Python 3.13 coverage
+        if: ${{ !cancelled() && steps.ut313.outcome == 'success' }}
+        uses: codecov/codecov-action@v5
+        with:
+          files: ${{ env.CPU_TEST_ROOT }}/unit-3.13/coverage.xml
+          flags: python-3.13
           fail_ci_if_error: false
 
-  vllm-source-contracts:
-    name: vLLM source (main-verified)
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Resolve the selected upstream ref
+      - name: Resolve the pinned upstream ref
         id: upstream
+        if: ${{ !cancelled() && steps.workspace.outcome == 'success' }}
         run: |
           pin="$(tr -d '[:space:]' < .github/vllm-main-verified.commit)"
           [[ "${pin}" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Invalid upstream ref: ${pin}"; exit 1; }
           echo "ref=${pin}" >> "$GITHUB_OUTPUT"
-      - name: Check out upstream source without installing vLLM
+      - name: Check out upstream source once
+        id: upstream_checkout
+        if: ${{ !cancelled() && steps.upstream.outcome == 'success' }}
         uses: actions/checkout@v4
         with:
           repository: vllm-project/vllm
           ref: ${{ steps.upstream.outputs.ref }}
           path: .upstream/vllm
           persist-credentials: false
-      - name: Record the tested upstream revision
-        run: git -C .upstream/vllm rev-parse HEAD
-      - name: Purge pip cache (prevent cache-poisoning vector)
-        run: rm -rf ~/.cache/pip
-      - name: Install CPU-only test tooling
-        run: python -m pip install --no-cache-dir -r requirements/dev.txt
-      - name: Check feature contracts against the selected source
+      - name: Verify the tested upstream revision
+        id: upstream_verify
+        if: ${{ !cancelled() && steps.upstream_checkout.outcome == 'success' }}
         env:
-          VLLM_SOURCE_ROOT: ${{ github.workspace }}/.upstream/vllm
+          EXPECTED_SHA: ${{ steps.upstream.outputs.ref }}
+        run: |
+          actual="$(git -C .upstream/vllm rev-parse HEAD)"
+          echo "Upstream revision: $actual"
+          test "$actual" = "$EXPECTED_SHA"
+      - name: vLLM source and interface contracts
+        if: ${{ !cancelled() && steps.upstream_verify.outcome == 'success' }}
+        timeout-minutes: 15
         run: >-
-          python -m pytest tests/ut -q -rs
-          -m upstream_source --require-upstream-source
+          python -m scripts.ci.cpu_tests source --work-dir "$CPU_TEST_ROOT"
+          --upstream "$GITHUB_WORKSPACE/.upstream/vllm"
+      - name: CPU upstream reuse
+        if: ${{ !cancelled() && steps.upstream_verify.outcome == 'success' }}
+        timeout-minutes: 40
+        run: >-
+          python -m scripts.ci.cpu_tests reuse --work-dir "$CPU_TEST_ROOT"
+          --upstream "$GITHUB_WORKSPACE/.upstream/vllm"

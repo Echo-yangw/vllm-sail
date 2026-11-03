@@ -21,7 +21,8 @@ TREE_MODES = "100644:blob 100755:blob 120000:blob 040000:tree 160000:commit".spl
 CI_REUSE_FILES = set(
     f".github/workflows/{WORKFLOW} .github/workflows/ppu-build-and-test.yaml "
     ".github/workflows/_ppu-build.yaml .github/workflows/_ppu-pin-ut.yaml "
-    ".github/workflows/_ppu-model-tests.yaml scripts/ci/ppu_ci_command.py".split()
+    ".github/workflows/_ppu-model-tests.yaml .github/workflows/ut.yaml "
+    "scripts/ci/cpu_tests.py scripts/ci/ppu_ci_command.py".split()
 )
 SKIP_PPU_PREFIXES = ("docs/", ".github/ISSUE_TEMPLATE/")
 SKIP_PPU_FILES = set(
@@ -538,7 +539,7 @@ class Controller:
             or self.find_comment(pr["number"], tag)
         ):
             return
-        body = f"{tag}\n@{login}: {HELP}. New commits require `/ci run`. `--allow-stale` permits running behind the base branch. CPU checks remain automatic."
+        body = f"{tag}\n@{login}: {HELP}. New commits require `/ci run`. `--allow-stale` permits running behind the base branch. CPU and PPU checks run together on demand."
         self.api("POST", f"/issues/{pr['number']}/comments", {"body": body})
 
     def inputs(self):
@@ -587,13 +588,12 @@ class Controller:
     def report(self):
         inputs = self.inputs()
         needs = json.loads(self.env["NEEDS"])
-        results = {
-            stage: needs.get(stage, {}).get("result") for stage in ("validate", "ppu")
-        }
+        stages = ("validate", "cpu", "ppu")
+        results = {stage: needs.get(stage, {}).get("result") for stage in stages}
         skipped = needs.get("validate", {}).get("outputs", {}).get("skip_ppu") == "true"
         state, description = "success", "Passed"
         if skipped and all(result == "success" for result in results.values()):
-            description = "Skipped (no PPU-impacting changes)"
+            description = "Passed CPU; PPU skipped (no PPU impact)"
         if "cancelled" in results.values():
             state, description = "error", "Cancelled"
         elif any(result != "success" for result in results.values()):

@@ -810,7 +810,9 @@ def executor_setup(inputs=None, needs=None):
         {
             "NEEDS": json.dumps(
                 needs
-                or {"validate": {"result": "success"}, "ppu": {"result": "success"}}
+                or {
+                    stage: {"result": "success"} for stage in ("validate", "cpu", "ppu")
+                }
             ),
         },
     )
@@ -906,7 +908,11 @@ def test_report_mapping_and_finishes_old_sha_without_reauthorization(
     validate, ppu, state, description
 ):
     control, gh, _ = executor_setup(
-        needs={"validate": {"result": validate}, "ppu": {"result": ppu}}
+        needs={
+            "validate": {"result": validate},
+            "cpu": {"result": "success"},
+            "ppu": {"result": ppu},
+        }
     )
     control.report()
     status = gh.writes(f"/statuses/{SHA}")[0][2]
@@ -919,18 +925,39 @@ def test_report_mapping_and_finishes_old_sha_without_reauthorization(
     assert not any("/pulls/" in c[1] or "/collaborators/" in c[1] for c in gh.calls)
 
 
-def test_report_marks_docs_only_execution_as_skipped_success():
+def test_report_marks_docs_only_execution_as_cpu_passed_ppu_skipped():
     control, gh, _ = executor_setup(
         needs={
             "validate": {"result": "success", "outputs": {"skip_ppu": "true"}},
+            "cpu": {"result": "success"},
             "ppu": {"result": "success"},
         }
     )
     control.report()
     status = gh.writes(f"/statuses/{SHA}")[0][2]
     assert status["state"] == "success"
-    assert status["description"] == ("Skipped (no PPU-impacting changes) (attempt 2)")
+    assert status["description"] == (
+        "Passed CPU; PPU skipped (no PPU impact) (attempt 2)"
+    )
     assert status["description"] in reply(gh)
+
+
+@pytest.mark.parametrize("result", ["failure", "cancelled", "skipped", None])
+@pytest.mark.parametrize("skip_ppu", [False, True])
+def test_report_requires_cpu_success_even_without_ppu(result, skip_ppu):
+    needs = {name: {"result": "success"} for name in ("validate", "cpu", "ppu")}
+    needs["validate"]["outputs"] = {"skip_ppu": str(skip_ppu).lower()}
+    if result is None:
+        del needs["cpu"]
+    else:
+        needs["cpu"]["result"] = result
+    control, gh, _ = executor_setup(needs=needs)
+    control.report()
+    status = gh.writes(f"/statuses/{SHA}")[0][2]
+    assert status["state"] == ("error" if result == "cancelled" else "failure")
+    assert ("Cancelled" if result == "cancelled" else "cpu failed") in status[
+        "description"
+    ]
 
 
 @pytest.mark.parametrize("owner,patch", [(BOT, True), (USER, False)])
@@ -999,7 +1026,7 @@ def test_notify_filters_event_author_and_labels(change, notify):
             assert command in text
         assert "<!-- ppu-ci-authorized -->" in text
         assert "new commits" in text.lower()
-        assert "CPU" in text and "automatic" in text and "behind" in text
+        assert "CPU and PPU checks run together on demand" in text and "behind" in text
 
 
 @pytest.mark.parametrize("user,sent", [(BOT, False), (USER, True)])
@@ -1306,7 +1333,7 @@ def test_native_retry_can_reuse_successful_validate_and_report_new_attempt():
         GITHUB_RUN_ID="100",
         GITHUB_RUN_ATTEMPT="3",
         NEEDS=json.dumps(
-            {"validate": {"result": "success"}, "ppu": {"result": "success"}}
+            {stage: {"result": "success"} for stage in ("validate", "cpu", "ppu")}
         ),
     )
     calls_before_report = len(gh.calls)

@@ -30,6 +30,10 @@ From the repository root:
 CI uses `python -m pytest tests/ut -q` with only `requirements/dev.txt` installed,
 across Python 3.10–3.13. This merge gate must pass without torch, vLLM or a device.
 Never add imports or test dependencies that break that contract.
+CPU, source and interface checks run on demand with PPU CI through `/ci run`;
+opening a PR or pushing a commit does not start these tests.
+All CPU checks share one runner job, with Python versions and test phases run
+sequentially in separate virtual environments.
 
 `tests/e2e` and `@pytest.mark.ppu` require device verification. Skips are not
 failures and are not runtime evidence. The uninstalled `_version` warning is

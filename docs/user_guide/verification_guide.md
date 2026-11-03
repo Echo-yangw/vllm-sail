@@ -75,21 +75,34 @@ not establish that module imports, patch installation or device inference work.
 
 ### CI jobs
 
-The [unit-test workflow](../../.github/workflows/ut.yaml) runs for pull requests,
-pushes to `main` or `master`, and manual dispatch. Its jobs run independently:
+The [CPU workflow](../../.github/workflows/ut.yaml) runs on demand through
+[`/ci run`](../../CONTRIBUTING.md#ppu-ci-commands), alongside PPU checks, or by
+manual dispatch. Opening a PR or pushing a commit does not start it. All CPU
+phases run sequentially in one job on one runner, with separate virtual
+environments and one shared pinned upstream checkout:
 
-| Job | Environment and checks | Failure handling |
+| Phase | Environment and checks | Failure handling |
 | --- | --- | --- |
 | CPU UT | Python 3.10–3.13; only `requirements/dev.txt`; UT and branch coverage | Test failure fails the workflow; coverage-upload failure does not |
 | vLLM source (main-verified) | Python 3.12; checks out the exact verified main commit; runs `upstream_source` tests with a required source path | Checkout or test failure fails the workflow |
+| CPU upstream reuse | Python 3.12; device-less torch and vLLM installed in a separate environment; CPU whitelist from `tests/upstream_reuse` | Installation or test failure fails the workflow |
 
-The source job reads the full SHA in
-[verified main commit](../../.github/vllm-main-verified.commit) and logs the
+Interface and backend tests are covered by the UT and source suites without
+separate duplicate runs. Other phases continue after a test failure; any failed
+phase fails the CPU job. Retrying that job reruns all its phases.
+
+The source phases read the full SHA in
+[verified main commit](../../.github/vllm-main-verified.commit) and log the
 resolved commit. Update this pin only after qualifying that exact revision.
-Keep feature tests named after their behavior. The workflow does not install
-vLLM or run PPU workloads; installed compatibility and device checks require
-the prepared environment below. Repository branch protection determines which
-job results are required for merging.
+Keep feature tests named after their behavior. UT and source environments have
+only `requirements/dev.txt` and remain free of torch and vLLM; the reuse phase
+installs its own dependencies. CPU checks do not run PPU workloads; device
+checks require the prepared environment below. Repository branch protection
+determines which job results are required for merging. For the unified command path, require the
+aggregate `PPU CI` status, which includes CPU and interface results.
+
+Manually dispatching `upstream-reuse.yaml` also runs the consolidated CPU suite
+alongside PPU reuse tests. Its scheduled PPU lane is retained.
 
 The separate [upstream canary](../../.github/workflows/upstream-canary.yaml) runs
 weekly on Tuesday at 03:17 UTC and on manual dispatch. It installs upstream

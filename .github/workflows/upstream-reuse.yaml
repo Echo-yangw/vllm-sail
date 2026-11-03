@@ -7,7 +7,8 @@ name: Upstream test reuse gate
 #
 # Two lanes:
 #
-# 1. cpu-reuse (PR / push / manual): runs the CPU subset
+# 1. cpu-reuse (manual, also called by /ci run): runs the consolidated CPU suite,
+#    including unit tests and source contracts, followed by the CPU reuse subset
 #    (-m "upstream_source and not ppu") against the PINNED upstream checkout
 #    (.github/vllm-main-verified.commit) with a device-less torch + vLLM
 #    runtime installed from that same pinned source (VLLM_TARGET_DEVICE=empty,
@@ -23,9 +24,6 @@ name: Upstream test reuse gate
 #   M890P: board-type=ZW-M890P
 
 on:
-  pull_request:
-  push:
-    branches: [main, master]
   workflow_dispatch:
     inputs:
       build_run_id:
@@ -52,63 +50,15 @@ concurrency:
 
 jobs:
   # ==============================================================
-  # cpu-reuse: PR-gating CPU subset, no hardware, pinned upstream
+  # cpu-reuse: on-demand CPU subset, no hardware, pinned upstream
   # ==============================================================
   cpu-reuse:
-    name: Category-5 upstream reuse (CPU subset)
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Resolve the pinned upstream ref
-        id: upstream
-        run: |
-          pin="$(tr -d '[:space:]' < .github/vllm-main-verified.commit)"
-          [[ "${pin}" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Invalid upstream ref: ${pin}"; exit 1; }
-          echo "ref=${pin}" >> "$GITHUB_OUTPUT"
-
-      - name: Check out upstream source at the pinned commit
-        uses: actions/checkout@v4
-        with:
-          repository: vllm-project/vllm
-          ref: ${{ steps.upstream.outputs.ref }}
-          path: .upstream/vllm
-          persist-credentials: false
-
-      - name: Record the tested upstream revision
-        run: git -C .upstream/vllm rev-parse HEAD
-
-      - name: Purge pip cache (prevent cache-poisoning vector)
-        run: rm -rf ~/.cache/pip
-
-      - name: Install build dependencies and CPU-only test tooling
-        run: python -m pip install --no-cache-dir -r requirements/build.txt -r requirements/dev.txt
-
-      - name: Install a device-less torch + vLLM runtime from the pinned source
-        run: |
-          set -Eeuo pipefail
-          python -m pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu torch
-          # VLLM_TARGET_DEVICE=empty builds the pure-Python package with no
-          # kernel compilation -- enough for the CPU-runnable whitelist, whose
-          # tests exercise Python-level logic (params/config/scheduling), not
-          # compiled ops.
-          VLLM_TARGET_DEVICE=empty python -m pip install --no-cache-dir --no-build-isolation -e .upstream/vllm
-          python -c "import vllm, torch; print('vllm', vllm.__version__, 'torch', torch.__version__)"
-
-      - name: Run the CPU reuse subset (fail-closed)
-        env:
-          VLLM_SOURCE_ROOT: ${{ github.workspace }}/.upstream/vllm
-        run: >-
-          python -m pytest
-          tests/upstream_reuse
-          -q -rs
-          -m "upstream_source and not ppu"
-          --require-upstream-source
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ut.yaml
+    with:
+      pr_head_sha: ${{ github.sha }}
 
   # ==============================================================
   # nightly-ppu-reuse: full reuse set on real PPU (dual chip)

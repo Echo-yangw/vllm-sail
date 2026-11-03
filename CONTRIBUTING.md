@@ -87,13 +87,13 @@ pushes to shared branches; use follow-up commits for review changes.
 ## PPU CI commands
 
 On an open PR, repository writers and users in `CI_TRUSTED_USERS` can request
-PPU CI. The PR author can also request it once the non-draft PR has `ready` or
-`ready-run-all-tests`, or an approved review decision with a trusted approval.
-Post one of these exact commands as a new PR comment:
+CI for CPU and PPU checks. The PR author can also request it once the non-draft
+PR has `ready` or `ready-run-all-tests`, or an approved review decision with a
+trusted approval. Post one of these exact commands as a new PR comment:
 
 | Command | Behavior |
 | --- | --- |
-| `/ci run` | Build wheels, run pin unit tests and model smoke tests for the current head. |
+| `/ci run` | Run CPU unit tests, source/interface checks and upstream reuse tests, build wheels, and run PPU pin unit tests and model smoke tests for the current head. |
 | `/ci run --allow-stale` | Run even when the PR is behind its base branch; no automatic merge is performed. |
 | `/ci retry` | Retry failed jobs in the latest run for the current head, falling back to a full rerun if GitHub rejects the partial rerun. |
 | `/ci cancel` | Request cancellation of active PPU CI runs for this PR, including older heads. |
@@ -113,8 +113,16 @@ code runs with read-only permissions, no inherited secrets, disabled cache
 access and an explicitly verified checkout SHA. Authorization and reporting
 run separately on GitHub-hosted runners using default-branch code.
 
-CPU checks still run automatically. The formal `PPU CI` check for PRs is requested
-through the commands above; opening a PR or pushing a commit does not start it.
+CPU unit tests, vLLM source/interface checks and upstream reuse tests run through
+the same commands in one CPU job and contribute to the formal `PPU CI` status.
+The job runs Python 3.10–3.13 UT, source contracts and upstream reuse sequentially
+in separate virtual environments. Interface and backend tests are included in
+the UT/source suites. Each phase still runs after another phase fails; any
+phase failure fails the job. Retrying a failed CPU job reruns the whole CPU suite.
+Opening a PR or pushing a commit does not start these tests. CPU checks still
+run when PPU jobs are skipped for non-impacting changes. Manually dispatch
+`ut.yaml` to run the consolidated CPU suite, or `upstream-reuse.yaml` to run it
+alongside PPU reuse tests. Its PPU nightly schedule is retained.
 Manually dispatch PPU ops tests (`ppu-ops-tests.yaml`) in GitHub Actions for
 operator tests. Dispatch PPU debug (`ppu-debug.yaml`) to rerun pin UT and/or
 model tests on existing builds.
@@ -144,8 +152,10 @@ under that resource trust model.
 
 Repository administrators must require the `PPU CI` commit status from GitHub
 Actions instead of the individual PPU build, pin UT, smoke and gate job checks.
-Keep the CPU and vLLM source checks required. Coordinate this ruleset change with
-the switch to on-demand PPU CI, after verifying the commands on the default branch.
+Remove the individual CPU, vLLM source/interface and CPU reuse checks from required
+checks; they now contribute to `PPU CI` and are no longer automatically created
+for every head. Coordinate this ruleset change with the switch to unified
+on-demand CI, after verifying the commands on the default branch.
 
 ## Reporting issues
 
