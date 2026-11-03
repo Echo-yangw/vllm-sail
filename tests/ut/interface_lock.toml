@@ -11,7 +11,7 @@
 schema = 1
 vllm_version_range = ">=0.32.0,<0.33.0"
 key_interface_count = 10
-target_count = 277
+target_count = 288
 
 [[key_interface]]
 symbol = "vllm.platforms.interface.PlatformEnum"
@@ -1290,6 +1290,78 @@ present = true
 fingerprint = "sha256:898a6678febc9b8866e4086e99f4d961c96c57af92156dc496e7640018fce40e"
 
 [[patch_target]]
+name = "vllm.model_executor.layers.quantization.quark.quark_moe.backend_to_kernel_cls"
+kind = "module"
+module = "vllm/model_executor/layers/quantization/quark/quark_moe.py"
+symbol = "backend_to_kernel_cls"
+present = true
+fingerprint = "sha256:8188f4c2192917cf76b2c9374aefc6b5dca637cfe7f163eab090b88bc6fa2f6f"
+
+[[patch_target]]
+name = "vllm.model_executor.layers.quantization.quark.quark_moe.convert_to_fp8_moe_kernel_format"
+kind = "module"
+module = "vllm/model_executor/layers/quantization/quark/quark_moe.py"
+symbol = "convert_to_fp8_moe_kernel_format"
+present = true
+fingerprint = "sha256:e0054c44029209a2a6a72d17e2225d004019ac63edc51ee2acbea4fb330ee591"
+
+[[patch_target]]
+name = "vllm.model_executor.layers.quantization.quark.quark_moe.convert_to_int8_moe_kernel_format"
+kind = "module"
+module = "vllm/model_executor/layers/quantization/quark/quark_moe.py"
+symbol = "convert_to_int8_moe_kernel_format"
+present = true
+fingerprint = "sha256:5aa9f221a2c0938d10f7cdb1fa9d412124195acc891320965f63527be7ec883b"
+
+[[patch_target]]
+name = "vllm.model_executor.layers.quantization.quark.quark_moe.convert_to_wna16_moe_kernel_format"
+kind = "module"
+module = "vllm/model_executor/layers/quantization/quark/quark_moe.py"
+symbol = "convert_to_wna16_moe_kernel_format"
+present = true
+fingerprint = "sha256:0428d3557b9230085ed34f5b1884bbcd60e70f1d011f982eecd1cd004fc2d2f3"
+
+[[patch_target]]
+name = "vllm.model_executor.layers.quantization.quark.quark_moe.make_fp8_moe_quant_config"
+kind = "module"
+module = "vllm/model_executor/layers/quantization/quark/quark_moe.py"
+symbol = "make_fp8_moe_quant_config"
+present = true
+fingerprint = "sha256:e0054c44029209a2a6a72d17e2225d004019ac63edc51ee2acbea4fb330ee591"
+
+[[patch_target]]
+name = "vllm.model_executor.layers.quantization.quark.quark_moe.make_wna16_moe_kernel"
+kind = "module"
+module = "vllm/model_executor/layers/quantization/quark/quark_moe.py"
+symbol = "make_wna16_moe_kernel"
+present = true
+fingerprint = "sha256:0428d3557b9230085ed34f5b1884bbcd60e70f1d011f982eecd1cd004fc2d2f3"
+
+[[patch_target]]
+name = "vllm.model_executor.layers.quantization.quark.quark_moe.select_fp8_moe_backend"
+kind = "module"
+module = "vllm/model_executor/layers/quantization/quark/quark_moe.py"
+symbol = "select_fp8_moe_backend"
+present = true
+fingerprint = "sha256:e0054c44029209a2a6a72d17e2225d004019ac63edc51ee2acbea4fb330ee591"
+
+[[patch_target]]
+name = "vllm.model_executor.layers.quantization.quark.quark_moe.select_int8_moe_backend"
+kind = "module"
+module = "vllm/model_executor/layers/quantization/quark/quark_moe.py"
+symbol = "select_int8_moe_backend"
+present = true
+fingerprint = "sha256:5aa9f221a2c0938d10f7cdb1fa9d412124195acc891320965f63527be7ec883b"
+
+[[patch_target]]
+name = "vllm.model_executor.layers.quantization.quark.quark_moe.select_wna16_moe_backend"
+kind = "module"
+module = "vllm/model_executor/layers/quantization/quark/quark_moe.py"
+symbol = "select_wna16_moe_backend"
+present = true
+fingerprint = "sha256:0428d3557b9230085ed34f5b1884bbcd60e70f1d011f982eecd1cd004fc2d2f3"
+
+[[patch_target]]
 name = "vllm.model_executor.layers.quantization.utils.fp8_utils.get_tma_aligned_size"
 kind = "module"
 module = "vllm/model_executor/layers/quantization/utils/fp8_utils.py"
@@ -1792,6 +1864,22 @@ module = "vllm/models/kimi_k3/nvidia/model.py"
 symbol = "KimiRoutedOutputTransform.forward"
 present = true
 fingerprint = "sha256:82d672f98450ec92117cb7a8a39de7cac5e84d99e190614319005ae41e6e7c49"
+
+[[patch_target]]
+name = "vllm.models.qwen4_exp.nvidia.qsa.Qwen4ExpQSAAttention.__init__"
+kind = "class"
+module = "vllm/models/qwen4_exp/nvidia/qsa.py"
+symbol = "Qwen4ExpQSAAttention.__init__"
+present = true
+fingerprint = "sha256:11f380aeb1fd545dcee7c625d5a451796c4b4393199228e417986c39b364c137"
+
+[[patch_target]]
+name = "vllm.models.qwen4_exp.nvidia.qsa.Qwen4ExpQSAAttention.fuse_indexer_projection"
+kind = "class"
+module = "vllm/models/qwen4_exp/nvidia/qsa.py"
+symbol = "Qwen4ExpQSAAttention.fuse_indexer_projection"
+present = false
+fingerprint = ""
 
 [[patch_target]]
 name = "vllm.platforms.interface.Platform.is_ppu"
