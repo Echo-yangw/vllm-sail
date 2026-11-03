@@ -110,3 +110,97 @@ def test_resample_dispatch_binds_the_upstream_mask_argument(
         assert pointer.dtype == "uint8" and pointer.is_contiguous()
     else:
         assert pointer is None
+
+
+@pytest.mark.upstream_source
+@pytest.mark.parametrize("shards", [None, 1, 4])
+@pytest.mark.parametrize(
+    "mode", ["ordinary", "block", "watermark", "fly", "synthetic", "no-draft"]
+)
+def test_all_sampler_kernel_calls_bind_the_upstream_draft_shard_contract(
+    upstream_source_root, shards, mode
+):
+    upstream = (
+        upstream_source_root
+        / "vllm/v1/worker/gpu/spec_decode/rejection_sampler_utils.py"
+    )
+    symbols = [
+        "_compute_local_logits_stats_kernel",
+        "_compute_cumulative_log_p_kernel",
+        "_compute_local_residual_mass_kernel",
+        "_rejection_kernel",
+        "_resample_kernel",
+        "_insert_resampled_kernel",
+    ]
+    calls = {}
+
+    def bind(symbol):
+        signature = inspect.signature(function(upstream, symbol, {}))
+
+        def launch(*args, **kwargs):
+            arguments = {
+                key: value for key, value in kwargs.items() if key != "num_warps"
+            }
+            calls[symbol] = (signature.bind(*args, **arguments).arguments, kwargs)
+
+        return Kernel(launch)
+
+    class Logits(Tensor):
+        def __getitem__(self, index):
+            rows, columns = index
+            assert rows == slice(None)
+            assert columns.start is None and columns.step is None
+            return Tensor(self.shape[0], columns.stop)
+
+    namespace = {
+        "torch": NS(
+            **{
+                name: name
+                for name in ("int32", "int64", "float32", "float64", "bool", "uint8")
+            }
+        ),
+        "triton": NS(
+            cdiv=lambda a, b: (a + b - 1) // b,
+            next_power_of_2=lambda n: 1 << (n - 1).bit_length(),
+        ),
+        "compute_fly_entropy": lambda data, top_k, from_logits: Tensor(data.shape[0]),
+        **{symbol: bind(symbol) for symbol in symbols},
+    }
+    sampler = function(
+        "vllm_sail/patch/enhancement/runtime.py", "rejection_sample", namespace
+    )
+    kwargs = {} if shards is None else {"draft_logits_num_shards": shards}
+    if mode == "block":
+        kwargs["use_block_verification"] = True
+    elif mode == "watermark":
+        kwargs.update(
+            contexts=Tensor(13, 2, dtype="int32"),
+            watermarking=Tensor(32, dtype="bool"),
+            watermarking_skip_mask=Tensor(13, dtype="bool", contiguous=False),
+            watermark_key=0x123456789ABCDEF,
+        )
+    elif mode == "fly":
+        kwargs["fly_window_size"] = 2
+    elif mode == "synthetic":
+        kwargs["synthetic_conditional_rates"] = Tensor(7)
+    sample, count = sampler(
+        Logits(13, 129),
+        None if mode == "no-draft" else Tensor(8, 7, 129),
+        Tensor(13),
+        Tensor(4),
+        Tensor(13),
+        Tensor(3),
+        Tensor(13),
+        Tensor(13),
+        Tensor(32),
+        Tensor(32),
+        7,
+        **kwargs,
+    )
+    expected = set(symbols) if mode == "block" else set(symbols) - set(symbols[1:3])
+    assert set(calls) == expected
+    for symbol, (bound, _) in calls.items():
+        if symbol != "_insert_resampled_kernel":
+            assert bound["DRAFT_LOGITS_NUM_SHARDS"] == (shards or 1)
+    assert calls["_insert_resampled_kernel"][1]["num_warps"] == 1
+    assert sample.shape == (3, 8) and count.shape == (3,)

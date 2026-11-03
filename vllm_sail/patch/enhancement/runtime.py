@@ -93,7 +93,8 @@ def may_reinitialize_input_batch(self, kv_cache_config: KVCacheConfig) -> None:
 def rejection_sample(
     # [num_logits, V]
     target_logits: torch.Tensor,
-    # [max_num_reqs, num_speculative_steps, V]
+    # [max_num_reqs, num_speculative_steps, V], or this rank's rows under
+    # batch-sharded sampling, indexed by req_state_idx // draft_logits_num_shards.
     draft_logits: torch.Tensor | None,
     # [num_logits]
     draft_sampled: torch.Tensor,
@@ -123,6 +124,7 @@ def rejection_sample(
     fly_window_size: int = 0,
     fly_entropy_threshold: float = 0.3,
     fly_entropy_top_k: int = 3,
+    draft_logits_num_shards: int = 1,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     assert target_logits.ndim == 2 and target_logits.stride(-1) == 1
     assert draft_logits is None or (
@@ -224,6 +226,7 @@ def rejection_sample(
         num_logits,
         BLOCK_SIZE=VOCAB_BLOCK_SIZE,
         HAS_DRAFT_LOGITS=has_draft_logits,
+        DRAFT_LOGITS_NUM_SHARDS=draft_logits_num_shards,
     )
 
     # Precompute the running joint ratio and residual mass for block
@@ -259,6 +262,7 @@ def rejection_sample(
             vocab_num_blocks,
             PADDED_VOCAB_NUM_BLOCKS=padded_vocab_num_blocks,
             HAS_DRAFT_LOGITS=has_draft_logits,
+            DRAFT_LOGITS_NUM_SHARDS=draft_logits_num_shards,
             num_warps=1,
         )
 
@@ -296,6 +300,7 @@ def rejection_sample(
                 vocab_num_blocks,
                 BLOCK_SIZE=VOCAB_BLOCK_SIZE,
                 PADDED_VOCAB_NUM_BLOCKS=padded_vocab_num_blocks,
+                DRAFT_LOGITS_NUM_SHARDS=draft_logits_num_shards,
             )
         else:
             local_residual_mass = None
@@ -347,6 +352,7 @@ def rejection_sample(
         vocab_num_blocks,
         PADDED_VOCAB_NUM_BLOCKS=padded_vocab_num_blocks,
         HAS_DRAFT_LOGITS=has_draft_logits,
+        DRAFT_LOGITS_NUM_SHARDS=draft_logits_num_shards,
         SYNTHETIC_MODE=synthetic_conditional_rates is not None,
         USE_BLOCK_VERIFICATION=use_block_verification,
         FLY_WINDOW_SIZE=fly_window_size,
@@ -394,6 +400,7 @@ def rejection_sample(
         vocab_size,
         BLOCK_SIZE=RESAMPLE_BLOCK_SIZE,
         HAS_DRAFT_LOGITS=has_draft_logits,
+        DRAFT_LOGITS_NUM_SHARDS=draft_logits_num_shards,
         USE_FP64=use_fp64,
         USE_BLOCK_VERIFICATION=use_block_verification,
         CONTEXT_WIDTH=context_width,

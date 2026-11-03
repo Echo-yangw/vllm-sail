@@ -6,7 +6,7 @@
 # tiers. vllm_sail/native/stubs.py registers each one so a call fails
 # with a named NotImplementedError instead of an AttributeError, and so
 # capability probes answer False instead of raising.
-# Upstream vLLM df8b5d37819c11d70cf948b904faa537f489f56d; compiled tiers a.
+# Upstream vLLM 43111fd1f0c3135ff671e25e2e85238aa05743d0; compiled tiers a.
 
 [[op]]
 namespace = "_C_custom_ar"
@@ -299,7 +299,7 @@ reason = "CUTLASS / CuTe in the include closure"
 [[op]]
 namespace = "_C"
 name = "get_cutlass_moe_mm_data"
-schema = "get_cutlass_moe_mm_data(Tensor topk_ids, Tensor! expert_offsets,                         Tensor! problem_sizes1, Tensor! problem_sizes2,                         Tensor! input_permutation,                         Tensor! output_permutation, int num_experts,                         int n, int k, Tensor? blockscale_offsets,                         bool is_gated) -> ()"
+schema = "get_cutlass_moe_mm_data(Tensor topk_ids, Tensor! expert_offsets,                         Tensor! problem_sizes1, Tensor! problem_sizes2,                         Tensor! input_permutation,                         Tensor! output_permutation, int num_experts,                         int n, int k, Tensor? blockscale_offsets,                         bool is_gated,                         Tensor!? sorted_expert_ids=None) -> ()"
 kind = "compute"
 tier = "x"
 reason = "CUTLASS / CuTe in the include closure"
@@ -539,7 +539,7 @@ reason = "not declared in csrc/upstream/manifest.toml"
 [[op]]
 namespace = "_C"
 name = "mxfp4_experts_quant"
-schema = "mxfp4_experts_quant(Tensor! output, Tensor! output_scale,Tensor input, Tensor input_offset_by_experts,Tensor output_scale_offset_by_experts, int n_experts) -> ()"
+schema = "mxfp4_experts_quant(Tensor! output, Tensor! output_scale,Tensor input, Tensor input_offset_by_experts,Tensor output_scale_offset_by_experts, int n_experts, Tensor? sorted_expert_ids=None) -> ()"
 kind = "compute"
 tier = "unclaimed"
 reason = "not declared in csrc/upstream/manifest.toml"
@@ -611,7 +611,7 @@ reason = "CUTLASS / CuTe in the include closure"
 [[op]]
 namespace = "_C"
 name = "silu_and_mul_mxfp4_experts_quant"
-schema = "silu_and_mul_mxfp4_experts_quant(Tensor! output, Tensor! output_scale,Tensor input, Tensor input_offset_by_experts,Tensor output_scale_offset_by_experts, int n_experts) -> ()"
+schema = "silu_and_mul_mxfp4_experts_quant(Tensor! output, Tensor! output_scale,Tensor input, Tensor input_offset_by_experts,Tensor output_scale_offset_by_experts, int n_experts, Tensor? sorted_expert_ids=None) -> ()"
 kind = "compute"
 tier = "unclaimed"
 reason = "not declared in csrc/upstream/manifest.toml"

@@ -53,7 +53,7 @@ fingerprint = "sha256:d4c578b62f838aab4803f4fb10dd53b74ff5844ff014b206c8ff31a778
 symbol = "vllm.v1.attention.backends.registry.AttentionBackendEnum"
 kind = "enum"
 present = true
-fingerprint = "sha256:1fbd080bd9c3bc0a057c262494c254f01990e821f4e78713ea98c89ad3b19bc1"
+fingerprint = "sha256:cb6651db44e497aadec8d5c5fff9bcd9c8f0bd6177c22357d9a6fc975ed42368"
 
 [[key_interface]]
 symbol = "vllm.v1.attention.backends.registry.register_backend"
@@ -127,7 +127,7 @@ kind = "module"
 module = "vllm/envs.py"
 symbol = "environment_variables"
 present = true
-fingerprint = "sha256:a70a6f145e73da4fb00e77f7f9e5f5f0f9418a888e705ffed82bbc840f6ed4c4"
+fingerprint = "sha256:2addb6bd55d0645d789ccf8442aa15b512bee90c8b44c514fc7e0fa274db16e4"
 
 [[patch_target]]
 name = "vllm.lora.layers.utils.try_get_optimal_moe_config"
@@ -295,7 +295,7 @@ kind = "module"
 module = "vllm/model_executor/layers/fused_moe/experts/fused_batched_moe.py"
 symbol = "try_get_optimal_moe_config"
 present = true
-fingerprint = "sha256:4a9d092fb0f0c28b5c57e11b3d8b5b50db05827c892a0db7b68b8a331ab382bf"
+fingerprint = "sha256:b34c0099a0a68ae236367bd769d4bef76c8842af979f9be44778ee6fcc6f4bfb"
 
 [[patch_target]]
 name = "vllm.model_executor.layers.fused_moe.experts.fused_humming_moe.has_humming"
@@ -2279,7 +2279,7 @@ kind = "module"
 module = "vllm/v1/worker/gpu/spec_decode/rejection_sampler_utils.py"
 symbol = "rejection_sample"
 present = true
-fingerprint = "sha256:abad627f3fa78184874564311eb22c2190a8262391a54cbd4f3c47640bc8c5d4"
+fingerprint = "sha256:96304c3dae0f8fd2e7e8663969910ef8dace8124585d99c67d3ab643a58c153c"
 
 [[patch_target]]
 name = "vllm.v1.worker.gpu_model_runner.GPUModelRunner.may_reinitialize_input_batch"

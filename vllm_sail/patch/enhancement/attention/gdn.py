@@ -124,6 +124,7 @@ def fused_recurrent_gated_delta_rule_packed_decode(
     BV = min(triton.next_power_of_2(V), 32)
     if (
         K == V == 128
+        and not current_platform.is_ppu()
         and current_platform.is_cuda()
         and current_platform.is_device_capability_family(100, device_id=dev.index)
     ):
@@ -133,6 +134,15 @@ def fused_recurrent_gated_delta_rule_packed_decode(
             BV = 4
         elif initial_state.dtype == torch.float32:
             BV = 8
+    elif (
+        K == V == 128
+        and initial_state.dtype == torch.float32
+        and not current_platform.is_ppu()
+        and current_platform.is_cuda()
+        and current_platform.is_device_capability(90, device_id=dev.index)
+    ):
+        # Upstream's H200 tuning applies to CUDA; PPU keeps its own tile.
+        BV = 4
     num_stages = 3
     num_warps = 1
 
