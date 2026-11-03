@@ -172,6 +172,7 @@ def launch_external_double(tmp_path, monkeypatch):
         profile_key=sanity.BASELINE_PROFILE,
         request_timeout=2,
         ready_timeout=None,
+        readiness_padding=0,
     ):
         selected = sanity.load_profiles()[profile_key]
         selected_checkpoint = tmp_path / selected["checkpoint"]
@@ -192,6 +193,8 @@ def launch_external_double(tmp_path, monkeypatch):
                 name,
                 "--mode",
                 mode,
+                "--readiness-padding",
+                str(readiness_padding),
             ]
 
         # Replace only the unavailable external program and package inventory.
@@ -262,15 +265,36 @@ def test_readiness_deadline_cannot_accept_a_late_trickling_models_response(
     launch_external_double, started_processes
 ):
     result, output = launch_external_double(
-        mode="slow-readiness", with_stream=False, ready_timeout=1.5
+        mode="slow-readiness",
+        with_stream=False,
+        ready_timeout=1.5,
+        readiness_padding=256,
     )
     assert (output / "slow-response-started.txt").is_file()
+    response = json.loads((output / "slow-response.json").read_text())
+    assert response["minimum_seconds"] > 1.5
     assert result["status"] == "failed", result
     assert "not ready" in result["error"]
     assert result["elapsed_seconds"] < 3
     assert result["cleanup"]["group_absent"]
     assert not result["cleanup"]["forced"]
     assert all(child.returncode is not None for child in started_processes)
+
+
+def test_readiness_accepts_a_complete_trickling_models_response_within_budget(
+    launch_external_double, started_processes
+):
+    result, output = launch_external_double(
+        mode="slow-readiness", with_stream=False, ready_timeout=4
+    )
+    response = json.loads((output / "slow-response.json").read_text())
+    assert response["minimum_seconds"] < 4
+    assert result["status"] == result["state"] == "passed", result
+    assert result["answer"] == "42"
+    assert result["cleanup"]["group_absent"]
+    assert not result["cleanup"]["forced"]
+    assert all(child.returncode is not None for child in started_processes)
+    assert json.loads((output / "result.json").read_text()) == result
 
 
 @pytest.mark.parametrize("signum", [signal.SIGINT, signal.SIGTERM])

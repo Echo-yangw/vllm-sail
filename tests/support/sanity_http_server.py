@@ -14,11 +14,15 @@ def main() -> None:
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--model", required=True)
     parser.add_argument("--mode", default="ok")
+    parser.add_argument("--readiness-padding", type=int, default=0)
     args = parser.parse_args()
 
     class Handler(BaseHTTPRequestHandler):
         def trickle(self, data):
             Path("slow-response-started.txt").write_text(str(time.monotonic()))
+            Path("slow-response.json").write_text(
+                json.dumps({"minimum_seconds": max(0, len(data) - 1) * 0.02})
+            )
             try:
                 for byte in data:
                     self.wfile.write(bytes([byte]))
@@ -27,8 +31,8 @@ def main() -> None:
             except (BrokenPipeError, ConnectionResetError):
                 pass
 
-        def reply(self, value, *, slow=False, slow_headers=False):
-            data = json.dumps(value).encode()
+        def reply(self, value, *, slow=False, slow_headers=False, padding=0):
+            data = json.dumps(value).encode() + b" " * padding
             if slow_headers:
                 headers = (
                     b"HTTP/1.0 200 OK\r\nX-Trickle: "
@@ -55,7 +59,11 @@ def main() -> None:
         def do_GET(self):
             if self.path == "/v1/models":
                 name = "unrelated-service" if args.mode == "stale" else args.model
-                self.reply({"data": [{"id": name}]}, slow=args.mode == "slow-readiness")
+                self.reply(
+                    {"data": [{"id": name}]},
+                    slow=args.mode == "slow-readiness",
+                    padding=args.readiness_padding,
+                )
             elif self.path == "/metrics":
                 self.send_response(200)
                 self.end_headers()
