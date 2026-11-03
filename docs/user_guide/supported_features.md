@@ -75,6 +75,12 @@ tests do not establish device correctness or full-model support.
 
 ## Model integration
 
+Loading-time `fp8-to-int8`, `bf16-to-int8`, and `fp8-to-bf16` paths are described in
+[Online quantization](online_quantization.md). They accept E4M3 128x128 block FP8
+or unquantized BF16 checkpoints and reuse existing Dense/MoE backends. Model
+recipes select target precision; fallback uses checkpoint policy for FP8 and
+the bundled default recipe for BF16. Device and model qualification is required.
+
 | Model family or path | PPU integration |
 | --- | --- |
 | Dense and MoE models | Upstream vLLM architectures using the applicable PPU operators and backends |
@@ -95,3 +101,11 @@ See [Configuration](configuration.md) for runtime choices and defaults. Build
 coverage is defined by the [native source manifests](../developer_guide/kernels.md#source-ownership);
 an excluded operation fails with a capability diagnostic rather than being
 enabled by an environment variable.
+
+The GLM-5.3-Flash INT8 kpool path on Zhenwu 810E requires decode context
+parallel size 1. It rejects larger sizes until distributed cache mapping and
+global top-k merging are implemented. Zhenwu M890 keeps the upstream FP8 path.
+
+The INT8 kpool path rejects `VLLM_SAIL_KPOOL_DECODE_LOGITS=paged` because the
+paged kernel does not produce complete logits on PPU. Use the default
+`non_paged` backend.

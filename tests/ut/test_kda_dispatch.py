@@ -12,6 +12,12 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 from tests.support.source import assert_accepts_upstream_keywords, function
+from tests.ut.test_kda_workspace_reservation import configs as constructor_configs
+from tests.ut.test_kda_workspace_reservation import kda_constructor as _kda_constructor
+from tests.ut.test_ppu_kernel_capabilities import modules as _modules
+
+kda_constructor = _kda_constructor
+modules = _modules
 
 
 @pytest.mark.parametrize("num_heads", [12, 24])
@@ -300,64 +306,19 @@ def test_forward_delegates_to_upstream_off_the_pla_path(is_ppu, pla):
     assert upstream_calls == [tuple(tensors)]
 
 
-def test_init_delegates_to_upstream_off_ppu():
-    calls = []
-    fn = function(
-        "vllm_sail/patch/enhancement/attention/kda.py",
-        "_init",
-        {
-            "current_platform": SimpleNamespace(is_ppu=lambda: False),
-            "_upstream_init": lambda *args: calls.append(args),
-        },
-    )
-    layer, config, vllm_config = object(), object(), object()
-    fn(layer, config, vllm_config, "model.kda", None, True)
-
-    assert calls == [(layer, config, vllm_config, "model.kda", None, True)]
+def test_init_delegates_to_upstream_off_ppu(kda_constructor):
+    c = kda_constructor(ppu=False)
+    config, cfg = constructor_configs("triton")
+    layer = c.provider.KimiK3DeltaAttention(config, cfg, "model.kda", None, True)
+    assert c.calls == [(layer, config, cfg, "model.kda", None, True)]
 
 
-def test_init_restores_the_flashkda_prefill_contract_on_ppu():
-    resolver_calls = []
-
-    def resolve(*args):
-        resolver_calls.append(args)
-        return "flashkda"
-
-    upstream_kda = SimpleNamespace(
-        resolve_kda_prefill_backend=resolve,
-        FlashKDAPrefillCheckpointExporter=lambda: "checkpoint-exporter",
-    )
-    original = upstream_kda.resolve_kda_prefill_backend
-
-    def upstream_init(self, config, vllm_config, prefix, aux_stream, run_gemm_rs_ar):
-        # Upstream stores whatever the resolver answered while building the
-        # layer, which is the demoted Triton choice. Restoring the FlashKDA
-        # contract afterwards is this patch's job.
-        self.kda_prefill_backend = upstream_kda.resolve_kda_prefill_backend(
-            "auto", 128, "bf16", "fp32", -5.0
-        )
-        self.local_num_heads, self.head_dim = 2, 128
-        self.model_config = SimpleNamespace(dtype="bf16")
-
-    layer = SimpleNamespace(get_state_dtype=lambda: ("bf16", "fp32"))
-    fn = function(
-        "vllm_sail/patch/enhancement/attention/kda.py",
-        "_init",
-        {
-            "current_platform": SimpleNamespace(is_ppu=lambda: True),
-            "_upstream_init": upstream_init,
-            "_kda": upstream_kda,
-            "logger": SimpleNamespace(info_once=lambda *args: None),
-            "torch": SimpleNamespace(uint8="uint8"),
-        },
-    )
-    vllm_config = SimpleNamespace(
-        scheduler_config=SimpleNamespace(max_num_batched_tokens=64, max_num_seqs=4)
-    )
-    fn(layer, object(), vllm_config, "model.kda", None, False)
-
-    assert len(resolver_calls) == 1
-    assert upstream_kda.resolve_kda_prefill_backend is original
+def test_init_restores_the_flashkda_prefill_contract_on_ppu(kda_constructor):
+    c = kda_constructor()
+    config, cfg = constructor_configs(tokens=64, seqs=4)
+    layer = c.provider.KimiK3DeltaAttention(config, cfg, "model.kda", None, False)
+    assert c.provider.resolve_kda_prefill_backend is c.resolver
+    assert len(c.calls) == 1
     assert layer.kda_prefill_backend == "flashkda"
     assert layer._flashkda_buffer_specs == (
         ((1, 64, 2, 128), "bf16"),

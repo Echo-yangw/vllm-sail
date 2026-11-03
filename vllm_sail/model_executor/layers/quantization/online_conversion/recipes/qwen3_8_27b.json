@@ -1,0 +1,37 @@
+{
+  "description": "Qwen3.8-27B W8A8 layer policy aligned with the referenced offline INT8 checkpoint",
+  "model_patterns": [
+    "*Qwen3.8-27B*",
+    "*Qwen3_8-27B*",
+    "*Qwen3_8_27B*"
+  ],
+  "ignored_layers": [
+    "re:.*lm_head$",
+    "re:.*embed_tokens$",
+    "re:(^|.*\\.)visual(\\.|$).*",
+    "re:.*\\.mlp\\.(gate|shared_expert_gate)$",
+    "re:.*\\.linear_attn\\.(conv1d|in_proj_a|in_proj_b|in_proj_ba)$",
+    "re:.*\\.fc$"
+  ],
+  "mix_layers": [],
+  "schema_version": 1,
+  "quantization": "w8a8_dynamic_token_symmetric_channel",
+  "id": "qwen3_8_27b",
+  "reference": "T-HEAD/Qwen3.8-27B-Quant-W-INT8-PerChannel-A-INT8-PerToken@04c058e83745b0dce9acc21400b0a8ee84947e24",
+  "model_constraints": {
+    "model_types": [
+      "qwen3_5",
+      "qwen3_5_text"
+    ],
+    "text_config": {
+      "model_type": "qwen3_5_text",
+      "hidden_size": 5120,
+      "intermediate_size": 17408,
+      "num_hidden_layers": 64,
+      "num_attention_heads": 24,
+      "num_key_value_heads": 4,
+      "linear_num_key_heads": 16,
+      "linear_num_value_heads": 48
+    }
+  }
+}

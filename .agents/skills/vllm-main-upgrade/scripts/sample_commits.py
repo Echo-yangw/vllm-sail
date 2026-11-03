@@ -15,8 +15,8 @@ from zoneinfo import ZoneInfo
 def samples(history, times, start, release, target, zone, before_days=2, after_days=1):
     if min(before_days, after_days) < 1:
         raise ValueError("Sampling intervals must be positive calendar days")
-    if not times[start] <= times[release] <= times[target]:
-        raise ValueError("Release endpoints must precede the frozen target in time")
+    if times[start] > times[target] or times[release] > times[target]:
+        raise ValueError("Start and release must precede the frozen target in time")
 
     def day_of(sha):
         return datetime.fromtimestamp(times[sha], zone).date()
@@ -39,10 +39,15 @@ def samples(history, times, start, release, target, zone, before_days=2, after_d
         seen[sha] = point
 
     add(start, day_of(start), "baseline", "baseline")
-    for left, right, stride, phase, endpoint_role in (
+    phases = (
         (start, release, before_days, "before-release", "release"),
         (release, target, after_days, "after-release", "frozen-main"),
-    ):
+    )
+    if times[release] <= times[start]:
+        # The latest release may predate an already-qualified main pin. Do not
+        # insert that older release or sample backwards from the baseline.
+        phases = ((start, target, after_days, "after-release", "frozen-main"),)
+    for left, right, stride, phase, endpoint_role in phases:
         day = day_of(left) + timedelta(days=stride)
         while day <= day_of(right):
             next_day = int(
@@ -98,6 +103,7 @@ def freeze(
         "frozen_at_utc": datetime.now(timezone.utc).isoformat(),
         "upstream_start": start,
         "release_endpoint": release,
+        "release_in_range": times[start] <= times[release] <= times[target],
         "vllm_target": target,
         "timezone": zone_name,
         "before_release_days": before_days,

@@ -47,6 +47,7 @@ from vllm.model_executor.models.deepseek_v2 import (
     _try_load_fp8_indexer_wk,
 )
 from vllm.model_executor.models.utils import (
+    extract_layer_index,
     get_pp_missing_layer_names,
     get_spec_layer_idx_from_weight_name,
     is_pp_missing_parameter,
@@ -297,9 +298,6 @@ def model_init(self, *, vllm_config, prefix: str = ""):
     ),
 )
 def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
-    rocm_aiter_moe_shared_expert_enabled = (
-        rocm_aiter_ops.is_fusion_moe_shared_experts_enabled()
-    )
     stacked_params_mapping = [
         # (param_name, shard_name, shard_id)
         ("gate_up_proj", "gate_proj", 0),
@@ -343,11 +341,7 @@ def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         ckpt_down_proj_name="down_proj",
         ckpt_up_proj_name="up_proj",
         num_experts=self.config.n_routed_experts
-        + (
-            self.config.n_shared_experts
-            if rocm_aiter_moe_shared_expert_enabled
-            else 0
-        ),
+        + (self.config.n_shared_experts if self.fused_shared_expert_layers else 0),
         num_redundant_experts=self.num_redundant_experts,
     )
 
@@ -373,7 +367,9 @@ def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
             continue  # this layer has no indexer; drop its checkpoint weights
 
         is_fusion_moe_shared_experts_layer = (
-            rocm_aiter_moe_shared_expert_enabled and ("mlp.shared_experts" in name)
+            "mlp.shared_experts" in name
+            and bool(rocm_aiter_ops.is_fusion_moe_shared_experts_enabled())
+            and extract_layer_index(name) in self.fused_shared_expert_layers
         )
 
     # PPU MODIFICATION: begin

@@ -120,8 +120,7 @@ def selection(
         for node in ast.parse(upstream.read_text()).body
         if isinstance(node, ast.Assign)
         and any(
-            getattr(target, "id", None) == "TRTLLM_BACKENDS"
-            for target in node.targets
+            getattr(target, "id", None) == "TRTLLM_BACKENDS" for target in node.targets
         )
     ]
     assert len(constants) == 1

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Capture expert and channel strides without running a Triton kernel."""
 
+import inspect
 import math
 from types import SimpleNamespace as NS
 
@@ -12,6 +13,7 @@ from tests.ut.test_ppu_kernel_capabilities import modules as _modules
 modules = _modules
 PATCH = "vllm_sail/patch/enhancement/triton_moe.py"
 UPSTREAM = "vllm/model_executor/layers/fused_moe/fused_moe.py"
+OWNED_KERNEL = "vllm_sail/model_executor/layers/fused_moe/triton_kernels.py"
 SCALES = [
     (None, None, (0, 0, 0)),
     ((32,), (5,), (5, 0, 0)),
@@ -37,13 +39,21 @@ class Tensor:
         return math.prod(self.shape[axis % self.ndim + 1 :])
 
 
-def check_launch(path, modules, shape, strides, expected, capability, copied):
+def check_launch(
+    path, modules, shape, strides, expected, capability, copied, host_tma=None
+):
     calls = []
+    kernel_path = OWNED_KERNEL if copied else path
+    signature = inspect.signature(function(kernel_path, "fused_moe_kernel", {}))
 
     class Kernel:
         def __getitem__(self, grid):
             assert grid({"BLOCK_SIZE_M": 16, "BLOCK_SIZE_N": 8}) == (4,)
-            return lambda *args, **kwargs: calls.append((args, kwargs))
+
+            def launch(*args, **kwargs):
+                calls.append(signature.bind(*args, **kwargs).arguments)
+
+            return launch
 
     kernel = Kernel()
     modules(
@@ -62,7 +72,15 @@ def check_launch(path, modules, shape, strides, expected, capability, copied):
         ),
     }
     scale = Tensor(shape, strides) if shape is not None else None
-    config = {"BLOCK_SIZE_M": 16, "BLOCK_SIZE_N": 8, "BLOCK_SIZE_K": 4}
+    config = {
+        "BLOCK_SIZE_M": 16,
+        "BLOCK_SIZE_N": 8,
+        "BLOCK_SIZE_K": 4,
+        "GROUP_SIZE_M": 1,
+    }
+    if host_tma is not None:
+        config["USE_TMA"] = host_tma
+    original_config = config.copy()
     kwargs = {"use_valu": True} if copied else {}
     function(path, "invoke_fused_moe_triton_kernel", namespace)(
         Tensor((2, 4)),
@@ -86,13 +104,23 @@ def check_launch(path, modules, shape, strides, expected, capability, copied):
         **kwargs,
     )
     assert len(calls) == 1
-    args, launch = calls[0]
-    assert args[5] is scale and args[23:26] == expected
+    launch = calls[0]
+    assert launch["b_scale_ptr"] is scale
+    assert (
+        tuple(launch[n] for n in ("stride_bse", "stride_bsk", "stride_bsn")) == expected
+    )
     assert launch["naive_block_assignment"] is True
-    assert config == {"BLOCK_SIZE_M": 16, "BLOCK_SIZE_N": 8, "BLOCK_SIZE_K": 4}
+    assert config == original_config
     if copied:
         assert launch["use_valu"] is True
         assert launch["even_Ks"] is (ppu and capability >= 89)
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_host_tma_configuration_does_not_reach_owned_kernel(modules, enabled):
+    check_launch(
+        PATCH, modules, (32, 8, 2), (131, 9, 2), (131, 2, 9), 89, True, enabled
+    )
 
 
 @pytest.mark.parametrize("shape,strides,expected", SCALES)

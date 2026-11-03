@@ -106,6 +106,7 @@ def test_humming_converter_retains_checkpoint_key_unless_explicit_override(
     )
     namespace = {
         "Mxfp4MoeBackend": backend,
+        "kMxfp8Dynamic": object(),
         "envs": NS(VLLM_HUMMING_INPUT_QUANT_CONFIG=override),
         "current_platform": NS(is_rocm=lambda: False),
         "B12X_BACKENDS": (),

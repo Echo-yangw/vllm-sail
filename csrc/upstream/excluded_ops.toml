@@ -6,7 +6,7 @@
 # tiers. vllm_sail/native/stubs.py registers each one so a call fails
 # with a named NotImplementedError instead of an AttributeError, and so
 # capability probes answer False instead of raising.
-# Upstream vLLM 5f63ea461ccd567ece6f50dd3701430c0f321039; compiled tiers a.
+# Upstream vLLM 8b10bda57ceab3a741d2fb3718af48cef691023e; compiled tiers a.
 
 [[op]]
 namespace = "_C_custom_ar"
@@ -75,7 +75,7 @@ reason = "not declared in csrc/upstream/manifest.toml"
 [[op]]
 namespace = "_C_cache_ops"
 name = "cp_gather_and_upconvert_nvfp4_kv_cache"
-schema = "cp_gather_and_upconvert_nvfp4_kv_cache(Tensor src_cache, Tensor! dst, Tensor block_table, Tensor workspace_starts, int batch_size) -> ()"
+schema = "cp_gather_and_upconvert_nvfp4_kv_cache(Tensor src_cache, Tensor! dst, Tensor block_table, Tensor workspace_starts, int batch_size, Tensor? seq_starts=None) -> ()"
 kind = "compute"
 tier = "unclaimed"
 reason = "not declared in csrc/upstream/manifest.toml"
@@ -274,6 +274,14 @@ reason = "not declared in csrc/upstream/manifest.toml"
 
 [[op]]
 namespace = "_C"
+name = "fused_minimax_m3_dspark_context_kv"
+schema = "fused_minimax_m3_dspark_context_kv(Tensor all_kv, Tensor k_norm_weight, Tensor cos_sin_cache, Tensor positions, Tensor slot_mapping, Tensor! kv_cache, Tensor cache_offsets, Tensor k_scale, Tensor scale_offsets, int rotary_dim, float eps, str kv_cache_dtype) -> ()"
+kind = "compute"
+tier = "unclaimed"
+reason = "not declared in csrc/upstream/manifest.toml"
+
+[[op]]
+namespace = "_C"
 name = "fused_muse_spark_qknorm_rope_kv_insert"
 schema = "fused_muse_spark_qknorm_rope_kv_insert(Tensor! qkv, Tensor positions, int num_heads, int num_kv_heads, int head_dim, float eps, Tensor? cos_sin_cache, int rotary_dim, Tensor? slot_mapping, Tensor!? kv_cache, int block_size, str kv_cache_dtype, Tensor? k_scale=None, Tensor? v_scale=None, Tensor!? q_fp8_out=None, Tensor? q_scale=None) -> ()"
 kind = "compute"
@@ -299,7 +307,7 @@ reason = "CUTLASS / CuTe in the include closure"
 [[op]]
 namespace = "_C"
 name = "get_cutlass_moe_mm_data"
-schema = "get_cutlass_moe_mm_data(Tensor topk_ids, Tensor! expert_offsets,                         Tensor! problem_sizes1, Tensor! problem_sizes2,                         Tensor! input_permutation,                         Tensor! output_permutation, int num_experts,                         int n, int k, Tensor? blockscale_offsets,                         bool is_gated) -> ()"
+schema = "get_cutlass_moe_mm_data(Tensor topk_ids, Tensor! expert_offsets,                         Tensor! problem_sizes1, Tensor! problem_sizes2,                         Tensor! input_permutation,                         Tensor! output_permutation, int num_experts,                         int n, int k, Tensor? blockscale_offsets,                         bool is_gated,                         Tensor!? sorted_expert_ids=None) -> ()"
 kind = "compute"
 tier = "x"
 reason = "CUTLASS / CuTe in the include closure"
@@ -371,7 +379,7 @@ reason = "not declared in csrc/upstream/manifest.toml"
 [[op]]
 namespace = "_C_cache_ops"
 name = "hisparse_invalidate_written_slots"
-schema = "hisparse_invalidate_written_slots(Tensor! device_global_indices,                                   Tensor request_state_indices,                                   Tensor req_id_per_token,                                   Tensor written_slots) -> ()"
+schema = "hisparse_invalidate_written_slots(Tensor device_global_indices_ptrs,                                   Tensor request_state_indices,                                   Tensor req_id_per_token,                                   Tensor written_slots,                                   int num_state_rows,                                   int region_stride) -> ()"
 kind = "compute"
 tier = "unclaimed"
 reason = "not declared in csrc/upstream/manifest.toml"
@@ -379,7 +387,7 @@ reason = "not declared in csrc/upstream/manifest.toml"
 [[op]]
 namespace = "_C_cache_ops"
 name = "hisparse_resolve_residency"
-schema = "hisparse_resolve_residency(Tensor host_cache,                 Tensor! hot_cache,                 Tensor hot_block_table,                 Tensor global_indices,                 Tensor! hot_indices,                 Tensor! device_global_indices,                 Tensor! lru_slots,                 Tensor? request_state_indices,                 int region_stride,                 int max_union_rows,                 Tensor(a!)? miss_mask=None,                 Tensor(b!)? stats=None,                 Tensor(c!)? attention_indices=None,                 int attention_block_stride=0,                 Tensor? request_ids=None,                 Tensor? source_block_table=None,                 int source_block_size=0,                 Tensor(d!)? resolved_global_indices=None,                 Tensor(e!)? valid_counts=None,                 Tensor(f!)? swap_host_physical_rows=None,                 Tensor(g!)? swap_device_physical_rows=None,                 Tensor(h!)? swap_counts=None,                 Tensor? resident_block_table=None,                 int resident_block_size=0,                 int resident_null_block=0) -> ()"
+schema = "hisparse_resolve_residency(Tensor host_cache,                 Tensor! hot_cache,                 Tensor hot_block_table,                 Tensor global_indices,                 Tensor! hot_indices,                 Tensor! device_global_indices,                 Tensor! lru_slots,                 Tensor? request_state_indices,                 int region_stride,                 int max_union_rows,                 Tensor(a!)? miss_mask=None,                 Tensor(b!)? stats=None,                 Tensor(c!)? attention_indices=None,                 int attention_block_stride=0,                 Tensor? request_ids=None,                 Tensor? source_block_table=None,                 int source_block_size=0,                 Tensor(d!)? resolved_global_indices=None,                 Tensor(e!)? valid_counts=None,                 Tensor(f!)? swap_host_physical_rows=None,                 Tensor(g!)? swap_device_physical_rows=None,                 Tensor(h!)? swap_counts=None,                 Tensor? resident_block_table=None,                 int resident_block_size=0,                 int resident_null_block=0,                 Tensor? num_valid_rows=None) -> ()"
 kind = "compute"
 tier = "unclaimed"
 reason = "not declared in csrc/upstream/manifest.toml"
@@ -537,9 +545,17 @@ tier = "unclaimed"
 reason = "not declared in csrc/upstream/manifest.toml"
 
 [[op]]
+namespace = "_moe_C"
+name = "muse_spark_routing"
+schema = "muse_spark_routing(Tensor! topk_weights, Tensor! topk_ids, Tensor logits, Tensor bias, float multiplier, float route_scale, float division_eps, Tensor? is_padding) -> ()"
+kind = "compute"
+tier = "unclaimed"
+reason = "not declared in csrc/upstream/manifest.toml"
+
+[[op]]
 namespace = "_C"
 name = "mxfp4_experts_quant"
-schema = "mxfp4_experts_quant(Tensor! output, Tensor! output_scale,Tensor input, Tensor input_offset_by_experts,Tensor output_scale_offset_by_experts, int n_experts) -> ()"
+schema = "mxfp4_experts_quant(Tensor! output, Tensor! output_scale,Tensor input, Tensor input_offset_by_experts,Tensor output_scale_offset_by_experts, int n_experts, Tensor? sorted_expert_ids=None) -> ()"
 kind = "compute"
 tier = "unclaimed"
 reason = "not declared in csrc/upstream/manifest.toml"
@@ -611,7 +627,7 @@ reason = "CUTLASS / CuTe in the include closure"
 [[op]]
 namespace = "_C"
 name = "silu_and_mul_mxfp4_experts_quant"
-schema = "silu_and_mul_mxfp4_experts_quant(Tensor! output, Tensor! output_scale,Tensor input, Tensor input_offset_by_experts,Tensor output_scale_offset_by_experts, int n_experts) -> ()"
+schema = "silu_and_mul_mxfp4_experts_quant(Tensor! output, Tensor! output_scale,Tensor input, Tensor input_offset_by_experts,Tensor output_scale_offset_by_experts, int n_experts, Tensor? sorted_expert_ids=None) -> ()"
 kind = "compute"
 tier = "unclaimed"
 reason = "not declared in csrc/upstream/manifest.toml"

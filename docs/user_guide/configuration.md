@@ -68,6 +68,11 @@ native build and device correctness verification before deployment.
 
 ## Compatibility controls
 
+For FP8/BF16 conversion and recipe selection, see [Online quantization](online_quantization.md).
+`VLLM_SAIL_FP8_LOAD_POLICY=native|bf16|int8` applies only when no explicit
+quantization argument was supplied. Leaving it unset preserves native behavior;
+the guide describes legacy opt-in variable precedence and source-format limits.
+
 | Variable | Default | Behavior |
 | --- | --- | --- |
 | `VLLM_SAIL_DISABLE_MOE_WNA16_CUDA` | `0` | Disable the native WNA16 MoE path; takes precedence over `VLLM_SAIL_FORCE_MOE_WNA16_CUDA` |

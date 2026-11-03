@@ -36,7 +36,7 @@ PROTECTED_PACKAGES = (
 )
 
 
-def tree_digest(root):
+def tree_digest(root, *, excluded=()):
     root = Path(root).resolve()
     if not root.is_dir():
         raise ValueError(f"missing or empty image component: {root}")
@@ -51,6 +51,8 @@ def tree_digest(root):
         ancestors = ancestors | {resolved}
         for path in sorted(directory.iterdir()):
             relative = path.relative_to(root)
+            if relative.as_posix() in excluded:
+                continue
             if path.name == "__pycache__" or path.suffix in (".pyc", ".pyo"):
                 continue
             if path.is_symlink():
@@ -71,11 +73,13 @@ def tree_digest(root):
 
 
 def snapshot(sdk, torch_root, torch_version, packages):
+    # The SDK generates compiled kernels under this root during inference.
+    # Runtime evidence inventories that mutable cache separately from SDK code.
     return {
         "stack_source": "image",
         "fingerprint_kind": "installed-tree-sha256",
         "sdk_path": str(Path(sdk).resolve()),
-        "sdk_sha256": tree_digest(sdk),
+        "sdk_sha256": tree_digest(sdk, excluded=("rtccache",)),
         "torch_path": str(Path(torch_root).resolve()),
         "torch_sha256": tree_digest(torch_root),
         "torch_version": torch_version,
@@ -125,7 +129,7 @@ def copy_verified(source, destination, expected):
 def install_torch(sdk):
     def preserved():
         return {
-            "sdk_sha256": tree_digest(sdk),
+            "sdk_sha256": tree_digest(sdk, excluded=("rtccache",)),
             "packages": {k: v for k, v in package_versions().items() if k != "torch"},
         }
 

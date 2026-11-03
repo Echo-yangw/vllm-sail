@@ -188,7 +188,8 @@ STABLE_TORCH_LIBRARY_FRAGMENT(_C, ops) {
       "int block_size, Tensor!? q_out, Tensor!? index_q_out, "
       "str kv_cache_dtype, bool skip_index_branch=False, "
       "Tensor!? q_fp8_out=None, float q_fp8_scale=1.0, "
-      "Tensor? kv_k_scale=None, Tensor? kv_v_scale=None) -> ()");
+      "Tensor? kv_k_scale=None, Tensor? kv_v_scale=None, "
+      "bool write_qkv=True) -> ()");
 
 #ifdef VLLM_ENABLE_FUSED_KDA_DECODE
 #endif
@@ -549,7 +550,8 @@ STABLE_TORCH_LIBRARY_FRAGMENT(_C_cache_ops, ops) {
       "                     Tensor! kv_cache,"
       "                     Tensor slot_mapping,"
       "                     str kv_cache_dtype,"
-      "                     Tensor scale) -> ()");
+      "                     Tensor scale,"
+      "                     bool skip_scale=False) -> ()");
 
   // Grouped concat_and_cache_mla across all layers. Each layer's cache base
   // pointer and optional plain-FP8 scale are read from device tensors.

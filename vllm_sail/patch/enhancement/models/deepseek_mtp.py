@@ -31,6 +31,7 @@ from vllm.model_executor.model_loader.weight_utils import (
 from vllm.model_executor.models.deepseek_mtp import DeepSeekMTP
 from vllm.model_executor.models.deepseek_v2 import _try_load_fp8_indexer_wk
 from vllm.model_executor.models.utils import (
+    extract_layer_index,
     get_pp_missing_layer_names,
     get_spec_layer_idx_from_weight_name,
 )
@@ -83,9 +84,6 @@ def init(self, *, vllm_config, prefix: str = ""):
     ),
 )
 def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
-    rocm_aiter_moe_shared_expert_enabled = (
-        rocm_aiter_ops.is_fusion_moe_shared_experts_enabled()
-    )
     stacked_params_mapping = [
         ("gate_up_proj", "gate_proj", 0),
         ("gate_up_proj", "up_proj", 1),
@@ -103,31 +101,42 @@ def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         stacked_params_mapping.extend(indexer_fused_mapping)
     # PPU MODIFICATION: end
 
+    fused_shared_expert_layers = self.fused_shared_expert_layers
     expert_params_mapping = fused_moe_make_expert_params_mapping(
         self,
         ckpt_gate_proj_name="gate_proj",
         ckpt_down_proj_name="down_proj",
         ckpt_up_proj_name="up_proj",
         num_experts=self.config.n_routed_experts
-        + (
-            self.config.n_shared_experts
-            if rocm_aiter_moe_shared_expert_enabled
-            else 0
-        ),
+        + (self.config.n_shared_experts if fused_shared_expert_layers else 0),
     )
 
     pp_missing_layer_names = get_pp_missing_layer_names(self)
     params_dict = dict(self.named_parameters())
     loaded_params: set[str] = set()
-    _pending_wk_fp8: dict = {}  # FP8 indexer wk dequant buffer
+    # Weight and scale can arrive in separate load_weights calls.
+    _pending_wk_fp8 = getattr(self, "_pending_indexer_wk_fp8", None)
+    if _pending_wk_fp8 is None:
+        self._pending_indexer_wk_fp8 = _pending_wk_fp8 = {}
     for name, loaded_weight in weights:
         if "rotary_emb.inv_freq" in name:
             continue
         spec_layer = get_spec_layer_idx_from_weight_name(self.config, name)
         if spec_layer is None:
+            # A tied top-level embed_tokens has no spec layer to rewrite
+            # from; the draft needs its own copy under PP.
+            param = params_dict.get(name) if "embed_tokens" in name else None
+            if param is not None:
+                weight_loader = getattr(
+                    param, "weight_loader", default_weight_loader
+                )
+                weight_loader(param, loaded_weight)
+                loaded_params.add(name)
             continue
         is_fusion_moe_shared_experts_layer = (
-            rocm_aiter_moe_shared_expert_enabled and ("mlp.shared_experts" in name)
+            "mlp.shared_experts" in name
+            and bool(rocm_aiter_ops.is_fusion_moe_shared_experts_enabled())
+            and extract_layer_index(name) in fused_shared_expert_layers
         )
         name = self._rewrite_spec_layer_name(spec_layer, name)
 
@@ -227,7 +236,7 @@ def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
                 # with expert_id.
                 is_expert_weight = False
                 for mapping in expert_params_mapping:
-                    param_name, weight_name, expert_id, shard_id = mapping
+                    param_name, weight_name, expert_id, expert_shard_id = mapping
                     if weight_name not in chunk_name:
                         continue
 
@@ -250,7 +259,7 @@ def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
                         param,
                         weight_to_load,
                         name_mapped,
-                        shard_id=shard_id,
+                        shard_id=expert_shard_id,
                         expert_id=expert_id,
                         return_success=True,
                     )
@@ -271,9 +280,10 @@ def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
                     if name.endswith(".bias") and name not in params_dict:
                         continue
 
-                    name = maybe_remap_kv_scale_name(name, params_dict)
-                    if name is None:
+                    remapped_name = maybe_remap_kv_scale_name(name, params_dict)
+                    if remapped_name is None:
                         continue
+                    name = remapped_name
 
                     # According to DeepSeek-V3 Technical Report, MTP modules
                     # shares embedding layer. We only load the first weights.

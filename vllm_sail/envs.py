@@ -44,6 +44,8 @@ if TYPE_CHECKING:
     VLLM_SAIL_FORCE_MOE_WNA16_CUDA: bool = False
     VLLM_SAIL_ENABLE_MOE_MARLIN: bool = False
     VLLM_SAIL_USE_TRITON_INT8_QUANT: bool = True
+    VLLM_SAIL_FP8_LOAD_POLICY: str | None = None
+    VLLM_SAIL_ENABLE_FP8_TO_INT8: bool = False
     VLLM_SAIL_KPOOL_DECODE_LOGITS: str = "non_paged"
     VLLM_SAIL_KPOOL_MAX_DENSE_POOLS: int = 1 << 21
     VLLM_SAIL_NVTX_PROFILE: bool = False
@@ -66,6 +68,8 @@ if TYPE_CHECKING:
     VLLM_PPU_FORCE_MOE_WNA16_CUDA: bool = False
     VLLM_PPU_ENABLE_MOE_MARLIN: bool = False
     VLLM_PPU_USE_TRITON_INT8_QUANT: bool = True
+    VLLM_PPU_FP8_LOAD_POLICY: str | None = None
+    VLLM_PPU_ENABLE_FP8_TO_INT8: bool = False
     VLLM_PPU_NVTX_PROFILE: bool = False
     VLLM_PPU_NVTX_DUMP_TOPK: bool = False
     VLLM_PPU_NVTX_VFA_DUMP_SEQLEN: bool = False
@@ -75,7 +79,7 @@ _TRUTHY = ("true", "1", "yes", "on")
 #: Backend names accepted by both MoE and dense GEMM selection.
 GEMM_BACKENDS = ("deepgemm", "acext", "triton")
 GDN_DECODE_KERNELS = ("auto", "cuda", "pla", "triton")
-KPOOL_DECODE_LOGITS_BACKENDS = ("non_paged", "paged")
+KPOOL_DECODE_LOGITS_BACKENDS = ("non_paged",)
 
 
 def _env_names(name: str) -> tuple[str, ...]:
@@ -185,11 +189,14 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Triton implementation of dynamic per-token int8 quant; faster than the
     # compiled kernel on PPU.
     "VLLM_SAIL_USE_TRITON_INT8_QUANT": _bool("VLLM_SAIL_USE_TRITON_INT8_QUANT", True),
+    "VLLM_SAIL_FP8_LOAD_POLICY": _choice(
+        "VLLM_SAIL_FP8_LOAD_POLICY", None, ("native", "bf16", "int8")
+    ),
+    "VLLM_SAIL_ENABLE_FP8_TO_INT8": _bool("VLLM_SAIL_ENABLE_FP8_TO_INT8", False),
     # Decode-time logits backend for the glm5_next kpool indexer.
     # ``non_paged`` (default) gathers the pool K cache and uses the non-paged
-    # int8 kernel (same one as prefill); ``paged`` uses int8_paged_mqa_logits.
-    # The PPU int8 paged kernel only writes 2 of every 64 logits (measured on
-    # PPU), so paged is opt-in until it is fixed.
+    # int8 kernel (same one as prefill). The paged INT8 kernel writes only
+    # part of the logits on PPU, so selecting it is rejected until fixed.
     "VLLM_SAIL_KPOOL_DECODE_LOGITS": _choice(
         "VLLM_SAIL_KPOOL_DECODE_LOGITS", "non_paged", KPOOL_DECODE_LOGITS_BACKENDS
     ),

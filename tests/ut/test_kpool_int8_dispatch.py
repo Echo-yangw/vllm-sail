@@ -71,7 +71,8 @@ def test_decode_defaults_to_non_paged_backend(monkeypatch):
     assert ppu_envs.VLLM_SAIL_KPOOL_DECODE_LOGITS == "non_paged"
 
     monkeypatch.setenv("VLLM_SAIL_KPOOL_DECODE_LOGITS", "paged")
-    assert ppu_envs.VLLM_SAIL_KPOOL_DECODE_LOGITS == "paged"
+    with pytest.raises(ValueError, match="Expected one of non_paged"):
+        _ = ppu_envs.VLLM_SAIL_KPOOL_DECODE_LOGITS
 
     monkeypatch.setenv("VLLM_SAIL_KPOOL_DECODE_LOGITS", "bogus")
     with pytest.raises(ValueError, match="Expected one of"):

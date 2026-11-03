@@ -148,6 +148,12 @@ def forward_ppu(
             hidden_states, q_quant, k, weights, **upstream_kwargs
         )
 
+    if getattr(self, "dcp_world_size", 1) != 1:
+        raise NotImplementedError(
+            "PPU INT8 kpool indexer requires decode context parallel size 1; "
+            "distributed cache mapping and global top-k merge are not implemented"
+        )
+
     # ``topk_backend`` selects among the CUDA top-k dispatches
     # (cooperative/persistent). The PPU op always uses the ``torch.ops._C``
     # top-k kernels exercised by the DSA INT8 path, so the flag is accepted for

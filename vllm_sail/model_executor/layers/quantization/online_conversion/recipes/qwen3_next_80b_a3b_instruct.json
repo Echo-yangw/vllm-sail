@@ -1,0 +1,26 @@
+{
+  "description": "Qwen3-Next-80B-A3B-Instruct recipe from QLean 0.2.0",
+  "model_patterns": [
+    "*Qwen3-Next-80B-A3B*",
+    "*/Qwen3-Next-80B-A3B*"
+  ],
+  "ignored_layers": [
+    "re:.*lm_head",
+    "re:.*embed_tokens",
+    "re:.*mlp.gate$",
+    "re:.*mlp.shared_expert_gate$",
+    "re:.*linear_attn.*",
+    "re:.*self_attn.*",
+    "re:.*mtp.*"
+  ],
+  "mix_layers": [],
+  "schema_version": 1,
+  "quantization": "w8a8_dynamic_token_symmetric_channel",
+  "id": "qwen3_next_80b_a3b_instruct",
+  "model_constraints": {
+    "model_types": [
+      "qwen3_next"
+    ],
+    "text_config": {}
+  }
+}

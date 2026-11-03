@@ -2,8 +2,10 @@
 """MoE host-offload assignment and expert override dispatch, without kernels."""
 
 import functools
+import importlib.util
 import inspect
 import math
+from pathlib import Path
 from types import SimpleNamespace as NS
 
 import pytest
@@ -206,6 +208,8 @@ def check_apply(modules, resident, router, source_root=None, copied=True):
         per_act_token_quant=False,
         quantization_emulation=False,
         _lora_context=None,
+        # This fixture exercises legacy host assignment, with no tail consumer.
+        _uses_post_gemm2_hook=lambda tokens: False,
         moe_problem_size=lambda *a: (32, 2, 8, 4, 2),
         adjust_N_for_activation=lambda n, a: n // 2,
         activation_config=NS(clamp_limit=None),
@@ -252,6 +256,76 @@ def check_apply(modules, resident, router, source_root=None, copied=True):
         assert ctx.calls[0][0][11] is ctx.config["UP"]
         assert ctx.calls[1][0][11] is ctx.config["DOWN"]
         assert all(call[1]["use_valu"] is True for call in ctx.calls)
+
+
+@pytest.mark.parametrize("quantize", [False, True])
+def test_empty_expert_batch_does_not_prepare_or_launch(
+    modules, patch_utils_module, quantize
+):
+    ctx = context(modules, None)
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("empty batches must not quantize, prepare assignments or launch")
+
+    ctx.namespace["moe_kernel_quantize_input"] = unexpected
+    ctx.namespace["try_get_optimal_moe_config"] = unexpected
+    layer = NS(
+        quant_config=NS(use_int4_w4a16=False),
+        expects_unquantized_inputs=quantize,
+        a1_scale=None,
+        quant_dtype=None,
+        per_act_token_quant=False,
+        block_shape=None,
+        quantization_emulation=False,
+        moe_problem_size=unexpected,
+    )
+    provider = modules("vllm.model_executor.layers.fused_moe.fused_moe")
+    for name in (
+        "invoke_fused_moe_triton_kernel",
+        "invoke_fused_moe_wna16_triton_kernel",
+        "dispatch_fused_moe_kernel",
+        "get_config_file_name",
+        "get_moe_configs",
+        "get_moe_wna16_block_config",
+        "try_get_optimal_moe_config",
+        "fused_experts_impl",
+        "should_moe_wna16_use_cuda",
+    ):
+        setattr(provider, name, unexpected)
+    experts = modules("vllm.model_executor.layers.fused_moe.experts.triton_moe")
+    experts.__dict__.update(ctx.namespace)
+    experts.TritonExperts = type("TritonExperts", (), {"apply": unexpected})
+    modules("vllm.platforms", current_platform=NS(is_ppu=lambda: True))
+    registry = patch_utils_module.PATCH_REGISTRY
+    before = len(registry)
+    spec = importlib.util.spec_from_file_location(
+        "_empty_moe_patch", Path(__file__).parents[2] / PATCH
+    )
+    target = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(target)
+        result = experts.TritonExperts.apply(
+            layer,
+            ctx.output[:0],
+            ctx.hidden[:0],
+            ctx.w1,
+            ctx.w2,
+            ctx.weights[:0],
+            ctx.ids[:0],
+            "relu",
+            -1,
+            None,
+            None,
+            None,
+            Tensor((32,)),
+            Tensor((32,)),
+            None,
+            False,
+        )
+    finally:
+        del registry[before:]
+    assert result is None
+    assert not ctx.calls and not ctx.assignments and not ctx.events
 
 
 @pytest.mark.parametrize("resident", [None, 0])
