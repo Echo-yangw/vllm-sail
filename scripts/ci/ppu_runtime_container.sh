@@ -3,9 +3,9 @@
 # Run pin/model/accuracy validation in an isolated PPU runtime container.
 set -Eeuo pipefail
 
-mode=${1:?Usage: ppu_runtime_container.sh pin-ut|model-test|model-accuracy}
+mode=${1:?Usage: ppu_runtime_container.sh pin-ut|model-test|model-accuracy|kernel-perf}
 case "${mode}" in
-    pin-ut|model-test|model-accuracy) ;;
+    pin-ut|model-test|model-accuracy|kernel-perf) ;;
     *) printf 'Unknown runtime mode: %s\n' "${mode}" >&2; exit 2 ;;
 esac
 
@@ -229,6 +229,23 @@ case "${mode}" in
         create+=(
             --entrypoint bash "${image_id}"
             /source/scripts/ci/ppu_e2e_accuracy.sh
+        )
+        ;;
+    kernel-perf)
+        : "${SUITE:?SUITE is required for kernel-perf}"
+        create+=(
+            --shm-size=8g
+            --env SUITE="${SUITE}"
+            --env TEST_PATH=tests/e2e/perf/test_kernel_perf.py
+            --env PYTEST_MARKER=perf
+            --env WHEELS_DIR=/wheels
+            --env RESULTS_DIR=/artifacts
+            --env BASELINE_ROOT=/source/tests/e2e/perf/baselines
+            --env BASELINE_OUTPUT_ROOT=/artifacts/baselines
+            --env VLLM_USE_RUST_FRONTEND=0
+            --env VLLM_USE_RUST_BENCH=0
+            --entrypoint bash "${image_id}"
+            /source/scripts/ci/perf_regression.sh
         )
         ;;
 esac
