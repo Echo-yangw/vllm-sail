@@ -44,7 +44,22 @@ def register() -> None:
     from vllm.platforms import current_platform
 
     if current_platform.is_ppu():
+        from vllm_sail.model_executor.layers.quantization.bf16_to_int8 import (
+            Bf16ToInt8Config,
+        )
+        from vllm_sail.model_executor.layers.quantization.fp8_to_bf16 import (
+            Fp8ToBf16Config,
+        )
+        from vllm_sail.model_executor.layers.quantization.fp8_to_int8 import (
+            Fp8ToInt8Config,
+        )
         from vllm_sail.models.deepseek_v4.quant_config import DeepseekV4FP8Config
+
+        for config in (Fp8ToInt8Config, Fp8ToBf16Config, Bf16ToInt8Config):
+            name = config.get_name()
+            if name in QUANTIZATION_METHODS:
+                raise RuntimeError(f"Quantization method {name!r} already has an owner")
+            register_quantization_config(name)(config)
 
         # The public registry explicitly supports overriding builtin configs.
         # Preserve its public name so checkpoint and MTP config resolution agree.

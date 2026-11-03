@@ -44,6 +44,8 @@ if TYPE_CHECKING:
     VLLM_SAIL_FORCE_MOE_WNA16_CUDA: bool = False
     VLLM_SAIL_ENABLE_MOE_MARLIN: bool = False
     VLLM_SAIL_USE_TRITON_INT8_QUANT: bool = True
+    VLLM_SAIL_FP8_LOAD_POLICY: str | None = None
+    VLLM_SAIL_ENABLE_FP8_TO_INT8: bool = False
     VLLM_SAIL_KPOOL_DECODE_LOGITS: str = "non_paged"
     VLLM_SAIL_KPOOL_MAX_DENSE_POOLS: int = 1 << 21
     VLLM_SAIL_NVTX_PROFILE: bool = False
@@ -66,6 +68,8 @@ if TYPE_CHECKING:
     VLLM_PPU_FORCE_MOE_WNA16_CUDA: bool = False
     VLLM_PPU_ENABLE_MOE_MARLIN: bool = False
     VLLM_PPU_USE_TRITON_INT8_QUANT: bool = True
+    VLLM_PPU_FP8_LOAD_POLICY: str | None = None
+    VLLM_PPU_ENABLE_FP8_TO_INT8: bool = False
     VLLM_PPU_NVTX_PROFILE: bool = False
     VLLM_PPU_NVTX_DUMP_TOPK: bool = False
     VLLM_PPU_NVTX_VFA_DUMP_SEQLEN: bool = False
@@ -185,6 +189,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Triton implementation of dynamic per-token int8 quant; faster than the
     # compiled kernel on PPU.
     "VLLM_SAIL_USE_TRITON_INT8_QUANT": _bool("VLLM_SAIL_USE_TRITON_INT8_QUANT", True),
+    "VLLM_SAIL_FP8_LOAD_POLICY": _choice(
+        "VLLM_SAIL_FP8_LOAD_POLICY", None, ("native", "bf16", "int8")
+    ),
+    "VLLM_SAIL_ENABLE_FP8_TO_INT8": _bool("VLLM_SAIL_ENABLE_FP8_TO_INT8", False),
     # Decode-time logits backend for the glm5_next kpool indexer.
     # ``non_paged`` (default) gathers the pool K cache and uses the non-paged
     # int8 kernel (same one as prefill); ``paged`` uses int8_paged_mqa_logits.
