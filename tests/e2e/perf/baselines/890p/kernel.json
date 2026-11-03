@@ -1,0 +1,1039 @@
+{
+  "chip": "890p",
+  "metrics": {
+    "deepgemm.bf16_dense.m1-n4096-k4096.latency_us": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "dtype": "bf16",
+          "k": 4096,
+          "m": 1,
+          "n": 4096
+        },
+        "date": "2026-10-26T06:49:59Z"
+      },
+      "direction": "lower_better",
+      "history": [
+        24.74999986588955,
+        23.21000024676323,
+        23.400000296533108
+      ],
+      "median": 24.74999986588955,
+      "p90": 26.13000012934208,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "us"
+    },
+    "deepgemm.bf16_dense.m1-n4096-k4096.tflops": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "dtype": "bf16",
+          "k": 4096,
+          "m": 1,
+          "n": 4096
+        },
+        "date": "2026-10-26T06:49:59Z"
+      },
+      "direction": "higher_better",
+      "history": [
+        1.3557346336088154,
+        1.445688567137321,
+        1.4339500672985612
+      ],
+      "median": 1.3557346336088154,
+      "p90": 1.3557346336088154,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "tflops"
+    },
+    "deepgemm.bf16_dense.m1024-n2048-k2048.latency_us": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "dtype": "bf16",
+          "k": 2048,
+          "m": 1024,
+          "n": 2048
+        },
+        "date": "2026-10-26T06:49:59Z"
+      },
+      "direction": "lower_better",
+      "history": [
+        34.83499959111214,
+        34.88999977707863,
+        34.77000072598457
+      ],
+      "median": 34.83499959111214,
+      "p90": 35.37999838590622,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "us"
+    },
+    "deepgemm.bf16_dense.m1024-n2048-k2048.tflops": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "dtype": "bf16",
+          "k": 2048,
+          "m": 1024,
+          "n": 2048
+        },
+        "date": "2026-10-26T06:49:59Z"
+      },
+      "direction": "higher_better",
+      "history": [
+        246.58919744014156,
+        246.20047712477353,
+        247.0501700501981
+      ],
+      "median": 246.58919744014156,
+      "p90": 246.58919744014156,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "tflops"
+    },
+    "deepgemm.bf16_dense.m4096-n7168-k7168.latency_us": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "dtype": "bf16",
+          "k": 7168,
+          "m": 4096,
+          "n": 7168
+        },
+        "date": "2026-10-26T06:49:59Z"
+      },
+      "direction": "lower_better",
+      "history": [
+        1166.5149927139282,
+        1150.7149934768677,
+        1168.1399941444397
+      ],
+      "median": 1166.5149927139282,
+      "p90": 1170.8199977874756,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "us"
+    },
+    "deepgemm.bf16_dense.m4096-n7168-k7168.tflops": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "dtype": "bf16",
+          "k": 7168,
+          "m": 4096,
+          "n": 7168
+        },
+        "date": "2026-10-26T06:49:59Z"
+      },
+      "direction": "higher_better",
+      "history": [
+        360.82416225851426,
+        365.77849197587716,
+        360.32221918424887
+      ],
+      "median": 360.82416225851426,
+      "p90": 360.82416225851426,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "tflops"
+    },
+    "deepgemm.mxfp4_grouped.t64-e16-n4096-k2048.latency_us": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "dtype": "mxfp4",
+          "experts": 16,
+          "k": 2048,
+          "n": 4096,
+          "tokens": 64
+        },
+        "date": "2026-10-26T06:49:59Z"
+      },
+      "direction": "lower_better",
+      "history": [
+        45.27500085532665,
+        45.934999361634254,
+        46.070000156760216
+      ],
+      "median": 45.27500085532665,
+      "p90": 45.660000294446945,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "us"
+    },
+    "deepgemm.mxfp4_grouped.t64-e16-n4096-k2048.tflops": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "dtype": "mxfp4",
+          "experts": 16,
+          "k": 2048,
+          "n": 4096,
+          "tokens": 64
+        },
+        "date": "2026-10-26T06:49:59Z"
+      },
+      "direction": "higher_better",
+      "history": [
+        11.857998936665654,
+        11.687622062936272,
+        11.653373348669735
+      ],
+      "median": 11.857998936665654,
+      "p90": 11.857998936665654,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "tflops"
+    },
+    "deepgemm.w8a8_fp8_dense.m1-n4096-k4096.latency_us": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "dtype": "w8a8-fp8",
+          "k": 4096,
+          "m": 1,
+          "n": 4096
+        },
+        "date": "2026-10-26T06:49:59Z"
+      },
+      "direction": "lower_better",
+      "history": [
+        29.240000061690807,
+        29.095000587403774,
+        28.720000758767128
+      ],
+      "median": 29.240000061690807,
+      "p90": 30.29000014066696,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "us"
+    },
+    "deepgemm.w8a8_fp8_dense.m1-n4096-k4096.tflops": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "dtype": "w8a8-fp8",
+          "k": 4096,
+          "m": 1,
+          "n": 4096
+        },
+        "date": "2026-10-26T06:49:59Z"
+      },
+      "direction": "higher_better",
+      "history": [
+        1.147552391559732,
+        1.1532713979228058,
+        1.1683297741472765
+      ],
+      "median": 1.147552391559732,
+      "p90": 1.147552391559732,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "tflops"
+    },
+    "deepgemm.w8a8_fp8_dense.m1024-n2048-k2048.latency_us": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "dtype": "w8a8-fp8",
+          "k": 2048,
+          "m": 1024,
+          "n": 2048
+        },
+        "date": "2026-10-26T06:49:59Z"
+      },
+      "direction": "lower_better",
+      "history": [
+        28.950000181794167,
+        28.905000537633896,
+        28.79999950528145
+      ],
+      "median": 28.950000181794167,
+      "p90": 29.62999977171421,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "us"
+    },
+    "deepgemm.w8a8_fp8_dense.m1024-n2048-k2048.tflops": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "dtype": "w8a8-fp8",
+          "k": 2048,
+          "m": 1024,
+          "n": 2048
+        },
+        "date": "2026-10-26T06:49:59Z"
+      },
+      "direction": "higher_better",
+      "history": [
+        296.7162189312167,
+        297.1781502240773,
+        298.26162290123466
+      ],
+      "median": 296.7162189312167,
+      "p90": 296.7162189312167,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "tflops"
+    },
+    "deepgemm.w8a8_int8_dense.m1-n4096-k4096.latency_us": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "dtype": "w8a8-int8",
+          "k": 4096,
+          "m": 1,
+          "n": 4096
+        },
+        "date": "2026-10-26T06:49:59Z"
+      },
+      "direction": "lower_better",
+      "history": [
+        33.57499837875366,
+        33.044999465346336,
+        33.844999969005585
+      ],
+      "median": 33.57499837875366,
+      "p90": 35.87999939918518,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "us"
+    },
+    "deepgemm.w8a8_int8_dense.m1-n4096-k4096.tflops": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "dtype": "w8a8-int8",
+          "k": 4096,
+          "m": 1,
+          "n": 4096
+        },
+        "date": "2026-10-26T06:49:59Z"
+      },
+      "direction": "higher_better",
+      "history": [
+        0.9993874495980117,
+        1.0154163275199293,
+        0.9914147445923569
+      ],
+      "median": 0.9993874495980117,
+      "p90": 0.9993874495980117,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "tflops"
+    },
+    "deepgemm.w8a8_int8_dense.m1024-n2048-k2048.latency_us": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "dtype": "w8a8-int8",
+          "k": 2048,
+          "m": 1024,
+          "n": 2048
+        },
+        "date": "2026-10-26T06:49:59Z"
+      },
+      "direction": "lower_better",
+      "history": [
+        32.910000532865524,
+        32.47000090777874,
+        32.88999944925308
+      ],
+      "median": 32.910000532865524,
+      "p90": 34.49999913573265,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "us"
+    },
+    "deepgemm.w8a8_int8_dense.m1024-n2048-k2048.tflops": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "dtype": "w8a8-int8",
+          "k": 2048,
+          "m": 1024,
+          "n": 2048
+        },
+        "date": "2026-10-26T06:49:59Z"
+      },
+      "direction": "higher_better",
+      "history": [
+        261.01289738423657,
+        264.54987224660454,
+        261.17162468347425
+      ],
+      "median": 261.01289738423657,
+      "p90": 261.01289738423657,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "tflops"
+    },
+    "deepgemm.w8a8_int8_dense.m4096-n7168-k7168.latency_us": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "dtype": "w8a8-int8",
+          "k": 7168,
+          "m": 4096,
+          "n": 7168
+        },
+        "date": "2026-10-26T06:49:59Z"
+      },
+      "direction": "lower_better",
+      "history": [
+        621.6699779033661,
+        619.3149983882904,
+        620.6949949264526
+      ],
+      "median": 621.6699779033661,
+      "p90": 628.7400126457214,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "us"
+    },
+    "deepgemm.w8a8_int8_dense.m4096-n7168-k7168.tflops": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "dtype": "w8a8-int8",
+          "k": 7168,
+          "m": 4096,
+          "n": 7168
+        },
+        "date": "2026-10-26T06:49:59Z"
+      },
+      "direction": "higher_better",
+      "history": [
+        677.0582623718509,
+        679.6328138400826,
+        678.1217803405585
+      ],
+      "median": 677.0582623718509,
+      "p90": 677.0582623718509,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "tflops"
+    },
+    "deepgemm.w8a8_int8_grouped.t64-e16-n4096-k2048.latency_us": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "dtype": "w8a8-int8",
+          "experts": 16,
+          "k": 2048,
+          "n": 4096,
+          "tokens": 64
+        },
+        "date": "2026-10-26T06:49:59Z"
+      },
+      "direction": "lower_better",
+      "history": [
+        121.81000038981438,
+        122.97499924898148,
+        122.894998639822
+      ],
+      "median": 121.81000038981438,
+      "p90": 124.30000305175781,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "us"
+    },
+    "deepgemm.w8a8_int8_grouped.t64-e16-n4096-k2048.tflops": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "dtype": "w8a8-int8",
+          "experts": 16,
+          "k": 2048,
+          "n": 4096,
+          "tokens": 64
+        },
+        "date": "2026-10-26T06:49:59Z"
+      },
+      "direction": "higher_better",
+      "history": [
+        8.814890571905664,
+        8.731383049867294,
+        8.737066893559266
+      ],
+      "median": 8.814890571905664,
+      "p90": 8.814890571905664,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "tflops"
+    },
+    "fa2.paged_decode.kv1024-512.h16-d128.latency_us": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "block_size": 256,
+          "fa_version": 2,
+          "head_dim": 128,
+          "heads": 16,
+          "kv_heads": 8,
+          "seq_lens": [
+            1024,
+            512
+          ]
+        },
+        "date": "2026-10-26T06:50:00Z"
+      },
+      "direction": "lower_better",
+      "history": [
+        53.26500162482262,
+        54.63000014424324,
+        54.77000027894974
+      ],
+      "median": 53.26500162482262,
+      "p90": 58.410000056028366,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "us"
+    },
+    "fa2.paged_decode.kv1024-512.h16-d128.tflops": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "block_size": 256,
+          "fa_version": 2,
+          "head_dim": 128,
+          "heads": 16,
+          "kv_heads": 8,
+          "seq_lens": [
+            1024,
+            512
+          ]
+        },
+        "date": "2026-10-26T06:50:00Z"
+      },
+      "direction": "higher_better",
+      "history": [
+        0.23623226539311878,
+        0.23032970834297087,
+        0.22974095190640537
+      ],
+      "median": 0.23623226539311878,
+      "p90": 0.23623226539311878,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "tflops"
+    },
+    "fa2.prefill.causal.s1024-h32-kv8-d128.latency_us": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "causal": true,
+          "fa_version": 2,
+          "head_dim": 128,
+          "heads": 32,
+          "kv_heads": 8,
+          "seq_len": 1024
+        },
+        "date": "2026-10-26T06:49:59Z"
+      },
+      "direction": "lower_better",
+      "history": [
+        82.60500058531761,
+        83.02999660372734,
+        82.31999725103378
+      ],
+      "median": 82.60500058531761,
+      "p90": 87.89999783039093,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "us"
+    },
+    "fa2.prefill.causal.s1024-h32-kv8-d128.tflops": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "causal": true,
+          "fa_version": 2,
+          "head_dim": 128,
+          "heads": 32,
+          "kv_heads": 8,
+          "seq_len": 1024
+        },
+        "date": "2026-10-26T06:49:59Z"
+      },
+      "direction": "higher_better",
+      "history": [
+        103.98807010633679,
+        103.45579842664218,
+        104.34809133684861
+      ],
+      "median": 103.98807010633679,
+      "p90": 103.98807010633679,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "tflops"
+    },
+    "fa2.prefill.full.s4096-h32-kv8-d128.latency_us": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "causal": false,
+          "fa_version": 2,
+          "head_dim": 128,
+          "heads": 32,
+          "kv_heads": 8,
+          "seq_len": 4096
+        },
+        "date": "2026-10-26T06:50:00Z"
+      },
+      "direction": "lower_better",
+      "history": [
+        1603.2750010490417,
+        1602.5049686431885,
+        1596.7299938201904
+      ],
+      "median": 1603.2750010490417,
+      "p90": 1612.8100156784058,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "us"
+    },
+    "fa2.prefill.full.s4096-h32-kv8-d128.tflops": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "causal": false,
+          "fa_version": 2,
+          "head_dim": 128,
+          "heads": 32,
+          "kv_heads": 8,
+          "seq_len": 4096
+        },
+        "date": "2026-10-26T06:50:00Z"
+      },
+      "direction": "higher_better",
+      "history": [
+        171.44775959466975,
+        171.53014332101202,
+        172.15052514066716
+      ],
+      "median": 171.44775959466975,
+      "p90": 171.44775959466975,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "tflops"
+    },
+    "fa3.paged_decode.kv1024-512.h16-d128.latency_us": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "block_size": 64,
+          "fa_version": 3,
+          "head_dim": 128,
+          "heads": 16,
+          "kv_heads": 8,
+          "seq_lens": [
+            1024,
+            512
+          ]
+        },
+        "date": "2026-10-26T06:50:00Z"
+      },
+      "direction": "lower_better",
+      "history": [
+        33.275000751018524,
+        33.069999888539314,
+        32.819999381899834
+      ],
+      "median": 33.275000751018524,
+      "p90": 38.81999850273132,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "us"
+    },
+    "fa3.paged_decode.kv1024-512.h16-d128.tflops": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "block_size": 64,
+          "fa_version": 3,
+          "head_dim": 128,
+          "heads": 16,
+          "kv_heads": 8,
+          "seq_lens": [
+            1024,
+            512
+          ]
+        },
+        "date": "2026-10-26T06:50:00Z"
+      },
+      "direction": "higher_better",
+      "history": [
+        0.37814911242683735,
+        0.38049325801058476,
+        0.38339159771402836
+      ],
+      "median": 0.37814911242683735,
+      "p90": 0.37814911242683735,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "tflops"
+    },
+    "fa3.prefill.causal.s1024-h32-kv8-d128.latency_us": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "causal": true,
+          "fa_version": 3,
+          "head_dim": 128,
+          "heads": 32,
+          "kv_heads": 8,
+          "seq_len": 1024
+        },
+        "date": "2026-10-26T06:50:00Z"
+      },
+      "direction": "lower_better",
+      "history": [
+        65.18999859690666,
+        65.15999883413315,
+        65.22000208497047
+      ],
+      "median": 65.18999859690666,
+      "p90": 65.89999794960022,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "us"
+    },
+    "fa3.prefill.causal.s1024-h32-kv8-d128.tflops": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "causal": true,
+          "fa_version": 3,
+          "head_dim": 128,
+          "heads": 32,
+          "kv_heads": 8,
+          "seq_len": 1024
+        },
+        "date": "2026-10-26T06:50:00Z"
+      },
+      "direction": "higher_better",
+      "history": [
+        131.76767566931045,
+        131.82834170801556,
+        131.70705791773494
+      ],
+      "median": 131.76767566931045,
+      "p90": 131.76767566931045,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "tflops"
+    },
+    "fa3.prefill.full.s4096-h32-kv8-d128.latency_us": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "causal": false,
+          "fa_version": 3,
+          "head_dim": 128,
+          "heads": 32,
+          "kv_heads": 8,
+          "seq_len": 4096
+        },
+        "date": "2026-10-26T06:50:00Z"
+      },
+      "direction": "lower_better",
+      "history": [
+        1188.5250210762024,
+        1188.6299848556519,
+        1188.8149976730347
+      ],
+      "median": 1188.5250210762024,
+      "p90": 1190.1700496673584,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "us"
+    },
+    "fa3.prefill.full.s4096-h32-kv8-d128.tflops": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "causal": false,
+          "fa_version": 3,
+          "head_dim": 128,
+          "heads": 32,
+          "kv_heads": 8,
+          "seq_len": 4096
+        },
+        "date": "2026-10-26T06:50:00Z"
+      },
+      "direction": "higher_better",
+      "history": [
+        231.27649992181037,
+        231.2560766985711,
+        231.22008679402697
+      ],
+      "median": 231.27649992181037,
+      "p90": 231.27649992181037,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "tflops"
+    },
+    "flashmla.dense_decode.kv16384.latency_us": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "block_size": 64,
+          "head_dim": 576,
+          "num_q_heads": 128,
+          "query_len": 1,
+          "seq_lens": [
+            16384,
+            8192
+          ]
+        },
+        "date": "2026-10-26T06:50:00Z"
+      },
+      "direction": "lower_better",
+      "history": [
+        63.245002180337906,
+        64.07999992370605,
+        63.77999857068062
+      ],
+      "median": 63.245002180337906,
+      "p90": 64.59999829530716,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "us"
+    },
+    "flashmla.dense_decode.kv16384.tflops": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "block_size": 64,
+          "head_dim": 576,
+          "num_q_heads": 128,
+          "query_len": 1,
+          "seq_lens": [
+            16384,
+            8192
+          ]
+        },
+        "date": "2026-10-26T06:50:00Z"
+      },
+      "direction": "higher_better",
+      "history": [
+        114.59810359929497,
+        113.10482710095526,
+        113.63683716562142
+      ],
+      "median": 114.59810359929497,
+      "p90": 114.59810359929497,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "tflops"
+    },
+    "flashmla.dense_decode.kv4096.latency_us": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "block_size": 64,
+          "head_dim": 576,
+          "num_q_heads": 128,
+          "query_len": 1,
+          "seq_lens": [
+            4096,
+            2048
+          ]
+        },
+        "date": "2026-10-26T06:50:00Z"
+      },
+      "direction": "lower_better",
+      "history": [
+        32.92500041425228,
+        32.84499980509281,
+        32.95999951660633
+      ],
+      "median": 32.92500041425228,
+      "p90": 33.19999948143959,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "us"
+    },
+    "flashmla.dense_decode.kv4096.tflops": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "block_size": 64,
+          "head_dim": 576,
+          "num_q_heads": 128,
+          "query_len": 1,
+          "seq_lens": [
+            4096,
+            2048
+          ]
+        },
+        "date": "2026-10-26T06:50:00Z"
+      },
+      "direction": "higher_better",
+      "history": [
+        55.032325139035194,
+        55.166367445648405,
+        54.97388818489167
+      ],
+      "median": 55.032325139035194,
+      "p90": 55.032325139035194,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "tflops"
+    },
+    "flashmla.dense_decode.kv512.latency_us": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "block_size": 64,
+          "head_dim": 576,
+          "num_q_heads": 128,
+          "query_len": 1,
+          "seq_lens": [
+            512,
+            256
+          ]
+        },
+        "date": "2026-10-26T06:50:00Z"
+      },
+      "direction": "lower_better",
+      "history": [
+        23.56499992311001,
+        23.195000365376472,
+        23.65999948233366
+      ],
+      "median": 23.56499992311001,
+      "p90": 24.450000375509262,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "us"
+    },
+    "flashmla.dense_decode.kv512.tflops": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "block_size": 64,
+          "head_dim": 576,
+          "num_q_heads": 128,
+          "query_len": 1,
+          "seq_lens": [
+            512,
+            256
+          ]
+        },
+        "date": "2026-10-26T06:50:00Z"
+      },
+      "direction": "higher_better",
+      "history": [
+        9.611390483302344,
+        9.764708447174188,
+        9.572798856953328
+      ],
+      "median": 9.611390483302344,
+      "p90": 9.611390483302344,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "tflops"
+    },
+    "pla.gdn_decode.b1-d128.latency_us": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "batch": 1,
+          "h": 4,
+          "head_dim": 128,
+          "hv": 8
+        },
+        "date": "2026-10-26T06:49:59Z"
+      },
+      "direction": "lower_better",
+      "history": [
+        21.080000326037407,
+        35.51999852061272,
+        21.170000545680523
+      ],
+      "median": 21.080000326037407,
+      "p90": 22.50000089406967,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "us"
+    },
+    "pla.gdn_decode.b4-d128.latency_us": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "batch": 4,
+          "h": 4,
+          "head_dim": 128,
+          "hv": 8
+        },
+        "date": "2026-10-26T06:49:59Z"
+      },
+      "direction": "lower_better",
+      "history": [
+        22.154999896883965,
+        35.55000014603138,
+        22.25000038743019
+      ],
+      "median": 22.154999896883965,
+      "p90": 22.81000092625618,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "us"
+    },
+    "pla.gdn_prefill.t2048-n4.latency_us": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "h": 4,
+          "head_dim": 128,
+          "hv": 8,
+          "num_seqs": 4,
+          "total_tokens": 2048
+        },
+        "date": "2026-10-26T06:49:59Z"
+      },
+      "direction": "lower_better",
+      "history": [
+        88.8499990105629,
+        88.78500014543533,
+        88.94000202417374
+      ],
+      "median": 88.8499990105629,
+      "p90": 89.21000361442566,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "us"
+    },
+    "pla.gdn_prefill.t512-n1.latency_us": {
+      "captured": {
+        "commit": "unknown",
+        "config": {
+          "h": 4,
+          "head_dim": 128,
+          "hv": 8,
+          "num_seqs": 1,
+          "total_tokens": 512
+        },
+        "date": "2026-10-26T06:49:59Z"
+      },
+      "direction": "lower_better",
+      "history": [
+        65.09499996900558,
+        65.21499902009964,
+        65.140001475811
+      ],
+      "median": 65.09499996900558,
+      "p90": 65.37999957799911,
+      "samples": 20,
+      "status": "confirmed",
+      "unit": "us"
+    }
+  },
+  "schema_version": 1,
+  "suite": "kernel"
+}
