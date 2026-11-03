@@ -26,6 +26,7 @@ BOOL_DEFAULTS = {
     "FORCE_MOE_WNA16_CUDA": False,
     "ENABLE_MOE_MARLIN": False,
     "USE_TRITON_INT8_QUANT": True,
+    "ENABLE_FP8_TO_INT8": False,
     "NVTX_PROFILE": False,
     "NVTX_DUMP_TOPK": False,
     "NVTX_VFA_DUMP_SEQLEN": False,
@@ -52,6 +53,7 @@ def test_defaults_and_canonical_snapshot() -> None:
     expected["VLLM_DEEPEPLL_RECV_HOOK"] = True
     expected["PPU_SDK"] = "/usr/local/PPU_SDK"
     expected["VLLM_GDN_DECODE_KERNEL"] = "auto"
+    expected["VLLM_SAIL_FP8_LOAD_POLICY"] = None
     assert envs.snapshot() == expected
     assert set(envs.environment_variables) == set(expected)
     for suffix in (*BOOL_DEFAULTS, *BACKENDS):
