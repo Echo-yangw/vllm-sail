@@ -210,8 +210,11 @@ def test_executor_separates_read_only_pr_execution_and_always_reporting():
         "_ppu-build.yaml",
         "_ppu-pin-ut.yaml",
         "_ppu-model-tests.yaml",
+        "_ppu-kernel-perf.yaml",
         "ppu-ops-tests.yaml",
         "ppu-debug.yaml",
+        "kernel-perf-label.yaml",
+        "perf-regression.yaml",
     ],
 )
 def test_untrusted_workflows_have_no_write_permissions_or_inherited_secrets(name):
@@ -231,12 +234,13 @@ def test_untrusted_workflows_have_no_write_permissions_or_inherited_secrets(name
         ("_ppu-build.yaml", ["build"]),
         ("_ppu-pin-ut.yaml", ["pin-unit-tests"]),
         ("_ppu-model-tests.yaml", ["prepare", "e2e"]),
+        ("_ppu-kernel-perf.yaml", ["kernel-perf"]),
     ],
 )
 def test_every_pr_checkout_verifies_the_requested_sha_before_execution(name, job_ids):
     config = workflow(name)
     inputs = config[True]["workflow_call"]["inputs"]
-    if name == "_ppu-build.yaml":
+    if name in ("_ppu-build.yaml",):
         assert "pr_mode" not in inputs
     else:
         assert inputs["pr_mode"]["type"] == "boolean"
@@ -278,6 +282,7 @@ def test_every_pr_checkout_verifies_the_requested_sha_before_execution(name, job
         ("_ppu-pin-ut.yaml", "pin-unit-tests"),
         ("_ppu-model-tests.yaml", "prepare"),
         ("_ppu-model-tests.yaml", "e2e"),
+        ("_ppu-kernel-perf.yaml", "kernel-perf"),
     ],
 )
 def test_sha_verification_allows_different_owner_but_rejects_wrong_sha(
@@ -417,6 +422,8 @@ def test_pr_pipeline_structure():
             "wheel_source_sha": "${{ inputs.wheel_source_sha || '' }}",
             "build_run_id": "${{ inputs.existing_build_run_id || github.run_id }}",
         }
+    # kernel-perf is no longer in the gate; it lives in kernel-perf-label.yaml
+    assert "kernel-perf" not in jobs
 
 
 def test_docs_only_call_uses_hosted_gate_without_ppu_jobs():
@@ -575,18 +582,22 @@ def test_debug_structure():
     inputs = config[True]["workflow_dispatch"]["inputs"]
     assert set(inputs) == {
         "build_run_id",
+        "wheel_source_sha",
         "target",
         "models",
         "accuracy_models",
     }
     assert inputs["build_run_id"]["type"] == "string"
     assert inputs["build_run_id"]["required"] is True
+    assert inputs["wheel_source_sha"]["type"] == "string"
+    assert inputs["wheel_source_sha"]["required"] is True
     assert inputs["target"]["type"] == "choice"
     assert inputs["target"]["options"] == [
         "both",
         "pin-ut",
         "model-tests",
         "accuracy-tests",
+        "kernel-perf",
     ]
     assert inputs["target"]["default"] == "both"
     assert inputs["models"]["type"] == "string"
@@ -611,6 +622,11 @@ def test_debug_structure():
             "_ppu-accuracy-tests.yaml",
             {"models": "${{ inputs.accuracy_models }}"},
         ),
+        "kernel-perf": (
+            "inputs.target == 'both' || inputs.target == 'kernel-perf'",
+            "_ppu-kernel-perf.yaml",
+            {},
+        ),
     }
     assert set(jobs) == set(expected_jobs)
     for job_id, (condition, target, extra_inputs) in expected_jobs.items():
@@ -621,6 +637,7 @@ def test_debug_structure():
         assert job["with"] == {
             "pr_mode": False,
             "build_run_id": "${{ inputs.build_run_id }}",
+            "wheel_source_sha": "${{ inputs.wheel_source_sha }}",
             **extra_inputs,
         }
 
@@ -699,6 +716,8 @@ def test_pr_pipeline_is_the_only_ppu_pull_request_route():
         triggers = workflow(path.name)[True]
         if path.name == "ppu-build-and-test.yaml":
             assert set(triggers) == {"workflow_call", "pull_request"}
+        elif path.name == "kernel-perf-label.yaml":
+            assert set(triggers) == {"pull_request"}
         elif path.name.startswith(("_ppu-", "ppu-")):
             assert "pull_request" not in triggers, path.name
 
@@ -901,7 +920,12 @@ def test_preview_jobs_skip_without_an_active_ci_preview_label(labels, draft):
 
 @pytest.mark.parametrize(
     "target,expected",
-    [("both", (True, True)), ("pin-ut", (True, False)), ("model-tests", (False, True))],
+    [
+        ("both", (True, True, True)),
+        ("pin-ut", (True, False, False)),
+        ("model-tests", (False, True, False)),
+        ("kernel-perf", (False, False, True)),
+    ],
 )
 def test_debug_targets_select_requested_consumers(target, expected):
     jobs = workflow("ppu-debug.yaml")["jobs"]
@@ -909,7 +933,7 @@ def test_debug_targets_select_requested_consumers(target, expected):
     assert (
         tuple(
             bool(expression(jobs[job_id]["if"], context))
-            for job_id in ("pin-unit-tests", "model-tests")
+            for job_id in ("pin-unit-tests", "model-tests", "kernel-perf")
         )
         == expected
     )
@@ -939,6 +963,13 @@ def test_pr_wheel_verification_runs_inside_the_runtime_container():
         assert '--vllm-commit "${EXPECTED_VLLM_COMMIT}"' in script
         assert '--sail-commit "${EXPECTED_SAIL_COMMIT}"' in script
     assert "PPU PIN UT SKIP" in pin_script
+
+    # perf_regression.sh also verifies commits when the env vars are set
+    perf_script = (ROOT / "scripts/ci/perf_regression.sh").read_text()
+    assert "EXPECTED_VLLM_COMMIT" in perf_script
+    assert "EXPECTED_SAIL_COMMIT" in perf_script
+    assert "--vllm-commit" in perf_script
+    assert "--sail-commit" in perf_script
 
 
 def test_retry_reuses_build_artifacts_but_keeps_pin_diagnostics_per_attempt():
@@ -1219,4 +1250,190 @@ def test_runtime_workflows_use_the_checked_in_docker_wrapper():
     assert "ppu-scheduler-action" not in (WORKFLOWS / "_ppu-pin-ut.yaml").read_text()
     assert (
         "ppu-scheduler-action" not in (WORKFLOWS / "_ppu-model-tests.yaml").read_text()
+    )
+    kperf = workflow("_ppu-kernel-perf.yaml")["jobs"]["kernel-perf"]
+    kperf_step = next(
+        step
+        for step in kperf["steps"]
+        if "ppu_runtime_container.sh" in step.get("run", "")
+    )
+    assert (
+        kperf_step["run"]
+        == 'bash "${PPU_CI_SOURCE_DIR}/scripts/ci/ppu_runtime_container.sh" kernel-perf'
+    )
+    assert kperf_step["env"]["PPU_CI_DEVICE_COUNT"] == "8"
+    assert kperf_step["env"]["PPU_CI_REQUIRE_PR_ARTIFACT"] == "${{ inputs.pr_mode }}"
+    assert kperf_step["env"]["PPU_CI_WHEEL_SOURCE_SHA"] == (
+        "${{ inputs.wheel_source_sha }}"
+    )
+    assert kperf_step["env"]["SUITE"] == "kernel"
+    assert (
+        kperf_step["env"]["PPU_CI_SOURCE_DIR"] == "${{ steps.runtime.outputs.source }}"
+    )
+    assert (
+        "ppu-scheduler-action" not in (WORKFLOWS / "_ppu-kernel-perf.yaml").read_text()
+    )
+
+
+# --- kernel-perf label workflow ------------------------------------------------
+
+
+def test_kernel_perf_label_workflow_triggers_only_on_correct_label():
+    config = workflow("kernel-perf-label.yaml")
+    assert config["name"] == "Kernel Perf Gate"
+    assert set(config[True]) == {"pull_request"}
+    pr = config[True]["pull_request"]
+    assert set(pr["types"]) == {"labeled", "synchronize", "reopened"}
+    assert pr["branches"] == ["main"]
+
+    # Top-level permissions include actions:read for artifact access
+    assert config["permissions"] == {"contents": "read", "actions": "read"}
+    assert config["cache-mode"] == "none"
+
+    # The build job carries the label / draft / action guard
+    assert set(config["jobs"]) == {"build", "kernel-perf"}
+    build = config["jobs"]["build"]
+    guard = build["if"]
+
+    # Build calls the reusable _ppu-build.yaml with the PR head SHA
+    assert build["uses"] == "./.github/workflows/_ppu-build.yaml"
+    assert build["with"] == {
+        "pr_head_sha": "${{ github.event.pull_request.head.sha }}",
+    }
+
+    # kernel-perf calls _ppu-kernel-perf.yaml with run_id (same workflow)
+    kp = config["jobs"]["kernel-perf"]
+    assert kp["needs"] == "build"
+    assert kp["uses"] == "./.github/workflows/_ppu-kernel-perf.yaml"
+    assert kp["with"] == {
+        "pr_mode": True,
+        "pr_head_sha": "${{ github.event.pull_request.head.sha }}",
+        "build_run_id": "${{ github.run_id }}",
+        "wheel_source_sha": "${{ github.event.pull_request.head.sha }}",
+    }
+
+    # labeled event for a *different* label must NOT trigger
+    ctx_other_label = {
+        "github.event.pull_request.draft": False,
+        "github.event.pull_request.labels.*.name": ["kernel-perf", "ready"],
+        "github.event.action": "labeled",
+        "github.event.label.name": "ready",
+    }
+    assert not expression(guard, ctx_other_label)
+
+    # labeled event for kernel-perf label triggers
+    ctx_kp_label = {
+        "github.event.pull_request.draft": False,
+        "github.event.pull_request.labels.*.name": ["kernel-perf"],
+        "github.event.action": "labeled",
+        "github.event.label.name": "kernel-perf",
+    }
+    assert expression(guard, ctx_kp_label)
+
+    # synchronize with label present triggers
+    ctx_sync = {
+        "github.event.pull_request.draft": False,
+        "github.event.pull_request.labels.*.name": ["kernel-perf"],
+        "github.event.action": "synchronize",
+        "github.event.label.name": None,
+    }
+    assert expression(guard, ctx_sync)
+
+    # reopened with label present triggers
+    ctx_reopen = {
+        "github.event.pull_request.draft": False,
+        "github.event.pull_request.labels.*.name": ["kernel-perf"],
+        "github.event.action": "reopened",
+        "github.event.label.name": None,
+    }
+    assert expression(guard, ctx_reopen)
+
+    # draft PRs do NOT trigger
+    ctx_draft = {
+        "github.event.pull_request.draft": True,
+        "github.event.pull_request.labels.*.name": ["kernel-perf"],
+        "github.event.action": "labeled",
+        "github.event.label.name": "kernel-perf",
+    }
+    assert not expression(guard, ctx_draft)
+
+    # synchronize without label does NOT trigger
+    ctx_no_label = {
+        "github.event.pull_request.draft": False,
+        "github.event.pull_request.labels.*.name": [],
+        "github.event.action": "synchronize",
+        "github.event.label.name": None,
+    }
+    assert not expression(guard, ctx_no_label)
+
+
+def test_kernel_perf_label_is_independent_of_ci_gate():
+    """kernel-perf-label.yaml is not referenced by ppu-build-and-test gate."""
+    gate = workflow("ppu-build-and-test.yaml")
+    assert "kernel-perf" not in gate["jobs"]
+    gate_text = (WORKFLOWS / "ppu-build-and-test.yaml").read_text()
+    assert "kernel-perf-label" not in gate_text
+    assert "_ppu-kernel-perf.yaml" not in gate_text
+
+
+# --- perf-regression schedule --------------------------------------------------
+
+
+def test_perf_regression_is_weekly_and_has_no_update_baseline():
+    config = workflow("perf-regression.yaml")
+    assert config[True]["schedule"] == [{"cron": "0 20 * * 1"}]
+    assert "workflow_dispatch" in config[True]
+    dispatch_inputs = config[True]["workflow_dispatch"]["inputs"]
+    assert "update_baseline" not in dispatch_inputs
+    # The extra_env should not contain UPDATE_BASELINE
+    perf_text = (WORKFLOWS / "perf-regression.yaml").read_text()
+    assert "UPDATE_BASELINE" not in perf_text
+    assert "update-baseline" not in perf_text.lower().replace("update_baseline", "")
+
+
+def test_perf_regression_script_has_no_update_baseline():
+    text = (ROOT / "scripts" / "ci" / "perf_regression.sh").read_text()
+    assert "UPDATE_BASELINE" not in text
+    assert "--update-baseline" not in text
+
+
+def test_perf_regression_avoids_source_shadowing():
+    """perf_regression.sh must keep the source tree off pytest's sys.path.
+
+    The script copies tests/ and pyproject.toml into a clean directory that
+    does NOT contain vllm_sail/.  pyproject.toml's pythonpath=["."] is safe
+    in that context because "." only exposes tests/, so the installed wheel
+    is never shadowed by the uncompiled source tree.
+    """
+    text = (ROOT / "scripts" / "ci" / "perf_regression.sh").read_text()
+    # Isolated run directory: tests/ copied, vllm_sail/ excluded.
+    assert 'PERF_RUN_DIR="/tmp/ppu-perf-run"' in text
+    assert 'cp -r "${ROOT_DIR}/tests" "${PERF_RUN_DIR}/tests"' in text
+    assert 'cp "${ROOT_DIR}/pyproject.toml" "${PERF_RUN_DIR}/pyproject.toml"' in text
+    assert 'cd "${PERF_RUN_DIR}"' in text
+    # vllm_sail must NOT be copied into the run directory.
+    assert 'cp' not in text.split('cd "${PERF_RUN_DIR}"')[1].split('pytest_args')[0] or \
+        'vllm_sail' not in text.split('cd "${PERF_RUN_DIR}"')[1].split('pytest_args')[0]
+    # unset PYTHONPATH still guards against external environment leaks.
+    assert "unset PYTHONPATH" in text
+    # No legacy three-layer workarounds remain.
+    assert '-o "pythonpath="' not in text
+    assert '-c "${ROOT_DIR}/pyproject.toml"' not in text
+    assert '--rootdir="${ROOT_DIR}"' not in text
+    # TEST_PATH is relative (no ROOT_DIR prefix) since CWD is the run dir.
+    assert '"${ROOT_DIR}/${TEST_PATH}"' not in text
+    assert '"${TEST_PATH}"' in text
+
+
+# --- debug workflow still includes kernel-perf ---------------------------------
+
+
+def test_debug_workflow_retains_kernel_perf_target():
+    config = workflow("ppu-debug.yaml")
+    assert "kernel-perf" in config["jobs"]
+    kp = config["jobs"]["kernel-perf"]
+    assert kp["uses"] == "./.github/workflows/_ppu-kernel-perf.yaml"
+    assert (
+        "kernel-perf"
+        in config[True]["workflow_dispatch"]["inputs"]["target"]["options"]
     )
