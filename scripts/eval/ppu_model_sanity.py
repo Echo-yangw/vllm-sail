@@ -23,7 +23,7 @@ import traceback
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
 PROFILES_PATH = Path(__file__).with_name("model_sanity_profiles.json")
@@ -77,6 +77,10 @@ def build_command(
 
 
 def request_json(url: str, timeout: float, body: dict | None = None) -> dict:
+    return _http_request("json", url, timeout, body=body)
+
+
+def _read_json(url: str, timeout: float, body: dict | None) -> dict:
     request = Request(
         url,
         data=None if body is None else json.dumps(body).encode(),
@@ -130,6 +134,12 @@ def validate_answer(
 def stream_answer(
     url: str, body: dict, timeout: float, raw_path: Path
 ) -> dict[str, Any]:
+    return _http_request("stream", url, timeout, body=body, raw_path=raw_path)
+
+
+def _read_stream(
+    url: str, body: dict, timeout: float, raw_path: Path
+) -> dict[str, Any]:
     request = Request(
         url,
         data=json.dumps({**body, "stream": True}).encode(),
@@ -137,7 +147,6 @@ def stream_answer(
     )
     content: list[str] = []
     model, finish, done = None, None, False
-    deadline = time.monotonic() + timeout
     with (
         build_opener(ProxyHandler({})).open(request, timeout=timeout) as response,
         raw_path.open("wb") as raw,
@@ -149,8 +158,6 @@ def stream_answer(
                 if line.strip():
                     raise ValueError("unexpected data after stream [DONE]")
                 break
-            if time.monotonic() >= deadline:
-                raise TimeoutError("stream exceeded request timeout")
             if not line.startswith(b"data:"):
                 continue
             data = line[5:].strip()
@@ -183,6 +190,121 @@ def stream_answer(
     }
 
 
+def _http_request(
+    kind: str,
+    url: str,
+    timeout: float,
+    *,
+    body: dict | None = None,
+    raw_path: Path | None = None,
+) -> Any:
+    """Bound the complete blocking operation, including interpreter startup.
+
+    urllib's socket timeout is only an inactivity timeout. A separate, reaped
+    process lets the caller interrupt connection setup, headers and body reads
+    even when a peer keeps providing bytes or never finishes an SSE line.
+    """
+    deadline = time.monotonic() + timeout
+    job = json.dumps(
+        {
+            "kind": kind,
+            "url": url,
+            "timeout": timeout,
+            "body": body,
+            "raw_path": str(raw_path.resolve()) if raw_path is not None else None,
+        }
+    )
+    process = None
+    try:
+        with defer_termination_signals() as launch_signals:
+            process = subprocess.Popen(
+                [sys.executable, "-I", str(Path(__file__).resolve()), "--http-worker"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                start_new_session=True,
+            )
+        if launch_signals:
+            raise KeyboardInterrupt("received termination during HTTP worker launch")
+        try:
+            stdout, stderr = process.communicate(
+                job, timeout=max(0, deadline - time.monotonic())
+            )
+        except subprocess.TimeoutExpired:
+            raise TimeoutError(f"HTTP request exceeded {timeout}s deadline") from None
+        if process.returncode:
+            raise RuntimeError(f"HTTP worker exited {process.returncode}: {stderr}")
+        reply = json.loads(stdout)
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"HTTP request exceeded {timeout}s deadline")
+        if "error" not in reply:
+            return reply["value"]
+        error = reply["error"]
+        message = error["message"]
+        if error["kind"] == "http":
+            raise HTTPError(url, error["code"], message, None, None)
+        exception = {
+            "url": URLError,
+            "timeout": TimeoutError,
+            "value": ValueError,
+            "os": OSError,
+        }.get(error["kind"], RuntimeError)
+        raise exception(message)
+    finally:
+        if process is not None:
+            with defer_termination_signals() as cleanup_signals:
+                if process.poll() is None:
+                    process.kill()
+                # The worker cannot spawn children. Reap it and close its pipes
+                # before propagating timeout/cancellation to model cleanup.
+                process.communicate(timeout=5)
+            if cleanup_signals:
+                raise KeyboardInterrupt("received termination during HTTP cleanup")
+
+
+def _http_worker() -> None:
+    """Run only standard-library network I/O; never import the model runtime."""
+    job = json.load(sys.stdin)
+    try:
+        if job["kind"] == "json":
+            value = _read_json(job["url"], job["timeout"], job["body"])
+        elif job["kind"] == "stream":
+            value = _read_stream(
+                job["url"], job["body"], job["timeout"], Path(job["raw_path"])
+            )
+        elif job["kind"] == "metrics":
+            with build_opener(ProxyHandler({})).open(
+                job["url"], timeout=job["timeout"]
+            ) as response:
+                Path(job["raw_path"]).write_bytes(response.read())
+            value = None
+        else:
+            raise ValueError(f"unknown HTTP operation: {job['kind']}")
+        reply = {"value": value}
+    except Exception as exc:
+        if isinstance(exc, HTTPError):
+            error = {"kind": "http", "code": exc.code, "message": str(exc.reason)}
+        else:
+            kind = next(
+                (
+                    name
+                    for cls, name in (
+                        (URLError, "url"),
+                        (TimeoutError, "timeout"),
+                        (ValueError, "value"),
+                        (OSError, "os"),
+                    )
+                    if isinstance(exc, cls)
+                ),
+                "runtime",
+            )
+            error = {"kind": kind, "message": str(exc)}
+        reply = {"error": error}
+    json.dump(reply, sys.stdout)
+
+
 def wait_ready(
     process: subprocess.Popen,
     base_url: str,
@@ -196,9 +318,14 @@ def wait_ready(
             raise RuntimeError(f"server exited before readiness: {process.returncode}")
         if FATAL_RE.search(log.read_text(errors="replace")):
             raise RuntimeError("fatal startup error; inspect serve.log")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
         try:
-            models = request_json(base_url + "/v1/models", min(5, timeout))
+            models = request_json(base_url + "/v1/models", min(5, remaining))
             if any(item.get("id") == served_name for item in models.get("data", [])):
+                if time.monotonic() >= deadline:
+                    break
                 if process.poll() is not None:
                     raise RuntimeError("owned server exited during readiness")
                 return models
@@ -480,10 +607,12 @@ def run_sanity(
             result["stream_answer"] = validate_answer(
                 response, served_name, answer_format=answer_format
             )
-        with build_opener(ProxyHandler({})).open(
-            base_url + "/metrics", timeout=10
-        ) as response:
-            (output / "metrics.prom").write_bytes(response.read())
+        _http_request(
+            "metrics",
+            base_url + "/metrics",
+            min(10, request_timeout),
+            raw_path=output / "metrics.prom",
+        )
         if process.poll() is not None:
             raise RuntimeError("owned server exited during requests")
         result["pre_shutdown_errors"] = len(
@@ -591,4 +720,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    if sys.argv[1:] == ["--http-worker"]:
+        _http_worker()
+    else:
+        raise SystemExit(main())
