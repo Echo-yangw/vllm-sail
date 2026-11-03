@@ -11,6 +11,7 @@ branches re-checked instead of the whole layer re-copied.
 from __future__ import annotations
 
 from dataclasses import replace
+from types import ModuleType
 
 import torch
 from vllm.config import VllmConfig
@@ -20,6 +21,7 @@ from vllm.platforms import current_platform
 from vllm.transformers_utils.configs.kimi_linear import KimiLinearConfig
 
 from vllm_sail import envs as ppu_envs
+from vllm_sail.patch.bodies import bind_body
 from vllm_sail.patch.utils import patch
 
 _MODULE = "vllm.models.kimi_k3.nvidia.kda"
@@ -248,34 +250,41 @@ def _init(
     # picked Triton, then restore the FlashKDA prefill contract that the PLA
     # kernel serves: the same buffers, no workspace and no checkpoint output.
     upstream_resolve = _kda.resolve_kda_prefill_backend
-    demoted: list[str] = []
+    demoted_specs = []
 
     def resolve_without_nvidia_workspace(*args, **kwargs) -> str:
         backend = upstream_resolve(*args, **kwargs)
         if backend == "flashkda":
-            demoted.append(backend)
+            T = vllm_config.scheduler_config.max_num_batched_tokens
+            N = vllm_config.scheduler_config.max_num_seqs
+            H, D = self.local_num_heads, self.head_dim
+            specs = (
+                ((1, T, H, D), self.model_config.dtype),
+                ((N, H, D, D), self.get_state_dtype()[1]),
+                ((N, H, D, D), self.get_state_dtype()[1]),
+                ((0,), torch.uint8),
+            )
+            # The demoted upstream branch skips its reservation. Reserve the
+            # whole simultaneous layout here, before norm and KV sizing.
+            if _kda.is_workspace_manager_initialized():
+                _kda.current_workspace_manager().get_simultaneous(*specs)
+            demoted_specs.append(specs)
             return "triton"
         return backend
 
-    _kda.resolve_kda_prefill_backend = resolve_without_nvidia_workspace
-    try:
-        _upstream_init(self, config, vllm_config, prefix, aux_stream, run_gemm_rs_ar)
-    finally:
-        _kda.resolve_kda_prefill_backend = upstream_resolve
-
-    if not demoted:
+    # Bind only this constructor call to a private provider namespace. Other
+    # constructors, including nested/non-PPU calls, keep the live resolver.
+    namespace = ModuleType(_upstream_init.__module__)
+    namespace.__dict__.update(_upstream_init.__globals__)
+    namespace.resolve_kda_prefill_backend = resolve_without_nvidia_workspace
+    bind_body(_upstream_init, namespace)(
+        self, config, vllm_config, prefix, aux_stream, run_gemm_rs_ar
+    )
+    if not demoted_specs:
         return
     logger.info_once("PPU serves the FlashKDA prefill backend with the PLA kernel.")
     self.kda_prefill_backend = "flashkda"
-    T = vllm_config.scheduler_config.max_num_batched_tokens
-    N = vllm_config.scheduler_config.max_num_seqs
-    H, D = self.local_num_heads, self.head_dim
-    self._flashkda_buffer_specs = (
-        ((1, T, H, D), self.model_config.dtype),
-        ((N, H, D, D), self.get_state_dtype()[1]),
-        ((N, H, D, D), self.get_state_dtype()[1]),
-        ((0,), torch.uint8),
-    )
+    self._flashkda_buffer_specs = demoted_specs[-1]
     self._checkpoint_exporter = _kda.FlashKDAPrefillCheckpointExporter()
 
 

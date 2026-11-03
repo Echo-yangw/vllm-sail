@@ -112,6 +112,9 @@ def invoke_fused_moe_triton_kernel(
     HAS_BIAS = B_bias is not None
 
     config = config.copy()
+    # NVIDIA's TMA-B selector is host configuration, not an argument to the
+    # independently owned PPU kernel.
+    config.pop("USE_TMA", None)
     config["SPLIT_K"] = 1
     BLOCK_SIZE_K = config.pop("BLOCK_SIZE_K")
     if block_shape is not None:

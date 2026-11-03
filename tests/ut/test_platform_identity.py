@@ -14,6 +14,10 @@ def test_ppu_identity_exists_before_general_patches(monkeypatch):
     cuda_enum = object()
 
     class NvmlCudaPlatform:
+        @classmethod
+        def get_hisparse_backend_cls(cls):
+            return "vllm.v1.hisparse.backend.CUDAHiSparseBackend"
+
         def __getattr__(self, name):
             # vLLM's fallback returns None for unknown platform capabilities.
             return None
@@ -47,6 +51,9 @@ def test_ppu_identity_exists_before_general_patches(monkeypatch):
     assert platform.is_ppu() is True
     assert module.PPUPlatform.is_ppu() is True
     assert platform.is_cuda() is True
+    assert NvmlCudaPlatform.get_hisparse_backend_cls() is not None
+    assert platform.get_hisparse_backend_cls() is None
+    assert module.PPUPlatform.get_hisparse_backend_cls() is None
     # Installing a predicate on the upstream base later must not change PPU
     # identity or become a prerequisite for it.
     NvmlCudaPlatform.is_ppu = lambda self: False
