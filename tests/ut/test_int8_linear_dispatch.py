@@ -1,51 +1,92 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Exercise INT8 Python dispatch without importing the device kernel stack.
-
-Compile the two production methods unchanged, with recorded backend calls in
-place of torch/vLLM. These tests check routing and layouts, not device numerics.
-"""
+"""Import the production INT8 module with strict external dependency doubles."""
 
 from __future__ import annotations
 
-import ast
+import importlib.util
+import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 
 
 @pytest.fixture
-def kernel():
+def kernel(monkeypatch):
+    def module(name, **attributes):
+        value = ModuleType(name)
+        value.__dict__.update(attributes)
+        monkeypatch.setitem(sys.modules, name, value)
+        return value
+
+    base = type("ExternalLinearKernel", (), {})
+    module("torch", Tensor=object, dtype=object, nn=SimpleNamespace(Module=object))
+    module("vllm", _custom_ops=SimpleNamespace())
+    dependencies = {
+        "vllm.config": dict(get_current_vllm_config=Mock(spec=[])),
+        "vllm.logger": dict(init_logger=lambda _: Mock(spec=["debug"])),
+        "vllm.model_executor.kernels.linear.scaled_mm.BlockScaledMMLinearKernel": dict(
+            Fp8BlockScaledMMLinearKernel=base,
+        ),
+        "vllm.model_executor.kernels.linear.scaled_mm.ScaledMMLinearKernel": dict(
+            FP8ScaledMMLinearKernel=base,
+            FP8ScaledMMLinearLayerConfig=object,
+            Int8ScaledMMLinearKernel=base,
+            Int8ScaledMMLinearLayerConfig=object,
+        ),
+        "vllm.model_executor.layers.quantization.input_quant_fp8": dict(
+            QuantFP8=object
+        ),
+        "vllm.model_executor.layers.quantization.utils": dict(
+            replace_parameter=Mock(spec=[])
+        ),
+        "vllm.model_executor.layers.quantization.utils.fp8_utils": dict(
+            deepgemm_post_process_fp8_weight_block=Mock(spec=[])
+        ),
+        "vllm.model_executor.layers.quantization.utils.int8_utils": dict(
+            per_token_group_quant_int8=Mock(spec=[])
+        ),
+        "vllm.model_executor.layers.quantization.utils.quant_utils": {
+            name: object()
+            for name in (
+                "GroupShape",
+                "kFp8DynamicTensorSym",
+                "kFp8DynamicTokenSym",
+                "kFp8StaticChannelSym",
+                "kFp8StaticTensorSym",
+            )
+        },
+        "vllm.model_executor.layers.quantization.utils.w8a8_utils": dict(
+            convert_to_channelwise=Mock(spec=[])
+        ),
+        "vllm.platforms": dict(current_platform=SimpleNamespace(is_ppu=lambda: False)),
+        "vllm.utils.torch_utils": dict(direct_register_custom_op=Mock(spec=[])),
+        "vllm_sail.utils.deep_gemm": {
+            name: Mock(spec=[])
+            for name in (
+                "fp8_gemm_nt",
+                "get_deep_gemm_config",
+                "int8_gemm_nt",
+                "is_deep_gemm_supported",
+                "should_use_deepgemm_for_fp8_linear",
+            )
+        },
+    }
+    for name, attributes in dependencies.items():
+        module(name, **attributes)
+    triton = module(
+        "vllm.model_executor.layers.quantization.compressed_tensors.triton_scaled_mm",
+        triton_scaled_mm=Mock(spec=[]),
+    )
     path = (
         Path(__file__).parents[2]
         / "vllm_sail/model_executor/kernels/linear/scaled_mm/ppu.py"
     )
-    tree = ast.parse(path.read_text())
-    cls = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.ClassDef) and node.name == "PPUInt8ScaledMMLinearKernel"
-    )
-    cls.bases = []
-    cls.body = [
-        node
-        for node in cls.body
-        if isinstance(node, ast.FunctionDef)
-        and node.name in {"apply_weights", "process_weights_after_loading"}
-    ]
-    module = ast.Module(
-        body=[
-            ast.ImportFrom(
-                module="__future__", names=[ast.alias(name="annotations")], level=0
-            ),
-            cls,
-        ],
-        type_ignores=[],
-    )
-    environment = {}
-    exec(compile(ast.fix_missing_locations(module), str(path), "exec"), environment)
-    return environment[cls.name](), environment
+    spec = importlib.util.spec_from_file_location("_test_ppu_int8", path)
+    runtime = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runtime)
+    return runtime.PPUInt8ScaledMMLinearKernel(), runtime.__dict__, triton
 
 
 @pytest.mark.parametrize(
@@ -54,34 +95,52 @@ def kernel():
         (True, True, True, True, True, "azp"),
         (False, True, True, False, True, "deepgemm"),
         (False, True, True, True, True, "acext"),
-        (False, True, False, True, True, "cutlass"),
-        (False, False, False, False, False, "cutlass"),
+        (False, True, False, True, True, "triton"),
+        (False, False, True, True, True, "acext"),
+        (False, False, False, False, False, "triton"),
+        (False, False, False, True, True, "triton"),
+        (False, False, False, True, False, "triton"),
     ],
 )
 @pytest.mark.parametrize("triton_quant", [False, True])
+@pytest.mark.parametrize("dtype", ["bf16", "fp16"])
+@pytest.mark.parametrize("static_input", [False, True])
 def test_dispatch_preserves_bias_priority_layout_and_output_shape(
-    kernel, asymmetric, deepgemm, acext, bias, row_major, backend, triton_quant
+    kernel,
+    asymmetric,
+    deepgemm,
+    acext,
+    bias,
+    row_major,
+    backend,
+    triton_quant,
+    dtype,
+    static_input,
 ):
-    instance, environment = kernel
-    x = Mock(shape=(2, 3, 64), dtype="bf16")
-    flat = Mock(shape=(6, 64), dtype="bf16")
+    instance, environment, triton_module = kernel
+    if backend == "deepgemm" and dtype == "fp16":
+        backend = "acext" if acext else "triton"
+    x = Mock(spec=["shape", "dtype", "reshape"], shape=(2, 3, 64), dtype=dtype)
+    flat = Mock(spec=["shape", "dtype", "contiguous"], shape=(6, 64), dtype=dtype)
     x.reshape.return_value = flat
     flat.contiguous.return_value = flat
-    output = Mock(shape=(6, 128))
+    output = Mock(spec=["shape", "view"], shape=(6, 128))
     calls = {
-        name: Mock(return_value=output)
-        for name in ("azp", "deepgemm", "acext", "cutlass")
+        name: Mock(spec=[], return_value=output)
+        for name in ("azp", "deepgemm", "acext", "triton")
     }
-    weight = Mock()
+    triton_module.triton_scaled_mm = calls["triton"]
+    weight = Mock(spec=["t"])
     scale, quantized, input_scale = object(), object(), object()
     zero_point = object() if asymmetric else None
     adjustment = object() if asymmetric else None
     bias_tensor = object() if bias else None
-    native_quant = Mock(return_value=(quantized, input_scale, zero_point))
-    triton = Mock(return_value=(quantized, input_scale))
+    native_quant = Mock(spec=[], return_value=(quantized, input_scale, zero_point))
+    triton = Mock(spec=[], return_value=(quantized, input_scale))
     environment.update(
         torch=SimpleNamespace(
             int8="int8",
+            bfloat16="bf16",
             ops=SimpleNamespace(
                 vllm=SimpleNamespace(
                     w8a8_int8_matmul_deepgemm=calls["deepgemm"],
@@ -92,12 +151,22 @@ def test_dispatch_preserves_bias_priority_layout_and_output_shape(
         ops=SimpleNamespace(
             scaled_int8_quant=native_quant,
             cutlass_scaled_mm_azp=calls["azp"],
-            cutlass_scaled_mm=calls["cutlass"],
+            cutlass_scaled_mm=Mock(
+                spec=[], side_effect=AssertionError("unsupported CUTLASS")
+            ),
         ),
         ppu_envs=SimpleNamespace(VLLM_SAIL_USE_TRITON_INT8_QUANT=triton_quant),
         per_token_group_quant_int8=triton,
     )
-    instance._get_layer_params = lambda layer: (weight, scale, None, None, adjustment)
+    stored_scale = object() if static_input else None
+    stored_zp = zero_point if static_input else None
+    instance._get_layer_params = lambda layer: (
+        weight,
+        scale,
+        stored_scale,
+        stored_zp,
+        adjustment,
+    )
     instance.use_deepgemm_int8_gemm = deepgemm
     instance.use_acext_int8_gemm = acext
     instance.weight_RowMajor = row_major
@@ -111,9 +180,9 @@ def test_dispatch_preserves_bias_priority_layout_and_output_shape(
     args, kwargs = calls[backend].call_args
     assert args[0] is quantized
     assert args[1] is (
-        weight.t.return_value if backend == "cutlass" and row_major else weight
+        weight.t.return_value if backend == "triton" and row_major else weight
     )
-    assert kwargs["out_dtype"] == "bf16"
+    assert kwargs["out_dtype"] == dtype
     if backend == "deepgemm":
         assert "bias" not in kwargs
         assert kwargs["scale_x"] is input_scale
@@ -124,15 +193,25 @@ def test_dispatch_preserves_bias_priority_layout_and_output_shape(
         assert kwargs["scale_b"] is scale
     if asymmetric:
         assert kwargs["azp_adj"] is adjustment
-        assert kwargs["azp"] is zero_point
-    assert triton.call_count == int(triton_quant and not asymmetric)
-    assert native_quant.call_count == int(not triton_quant or asymmetric)
+        assert kwargs["azp"] is (None if static_input else zero_point)
+    if backend == "triton":
+        assert kwargs["use_td"] is False
+    uses_triton_quant = triton_quant and not asymmetric and not static_input
+    assert triton.call_count == int(uses_triton_quant)
+    assert native_quant.call_count == int(not uses_triton_quant)
+    if not uses_triton_quant:
+        native_quant.assert_called_once_with(
+            flat,
+            stored_scale,
+            stored_zp,
+            symmetric=not asymmetric,
+        )
 
 
 @pytest.mark.parametrize("backend", [None, "deepgemm", "acext", "triton"])
 def test_weight_preparation_keeps_backend_layout(kernel, backend):
-    instance, environment = kernel
-    weight, scale = Mock(), Mock()
+    instance, environment, _ = kernel
+    weight, scale = Mock(spec=["data", "t"]), Mock(spec=["data"])
     layer = SimpleNamespace(weight=weight, scale=scale, logical_widths=[128])
     parameters = []
 

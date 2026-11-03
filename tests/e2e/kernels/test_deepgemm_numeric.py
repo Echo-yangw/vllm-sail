@@ -257,20 +257,16 @@ def _int8_layer(w_q: torch.Tensor, w_s: torch.Tensor) -> torch.nn.Module:
 
 
 @pytest.mark.parametrize("backend", ["deepgemm", "acext", "triton"])
-def test_w8a8_int8_scaled_mm_backend_forcing(backend, monkeypatch):
+@pytest.mark.parametrize("with_bias", [False, True])
+def test_w8a8_int8_scaled_mm_backend_forcing(backend, with_bias, monkeypatch):
     """``VLLM_SAIL_DENSE_BACKEND`` selects the int8 ScaledMM implementation.
 
     Mirrors the fork_port monkeypatch pattern: the backend is forced through
     the documented environment switch and the resulting ``apply_weights``
     output is compared against the same fp32 golden.
 
-    ``triton`` is asserted to be unsupported rather than compared numerically:
-    it disables both PPU int8 GEMMs, so ``apply_weights`` falls through to
-    ``ops.cutlass_scaled_mm``, which the PPU kernel manifest excludes (tier
-    ``'x'``, CUTLASS/CuTe in the include closure).  There is no Triton int8
-    *dense GEMM* on PPU -- ``VLLM_SAIL_USE_TRITON_INT8_QUANT`` only replaces
-    the activation *quantiser* -- so the documented contract for that backend
-    is a loud ``NotImplementedError``.
+    Biased layers requested with DeepGEMM must fall back to Triton, which fuses
+    bias in its epilogue, without reaching an excluded CUTLASS op.
     """
     from vllm.model_executor.kernels.linear import init_int8_linear_kernel
 
@@ -296,14 +292,8 @@ def test_w8a8_int8_scaled_mm_backend_forcing(backend, monkeypatch):
     assert kernel.use_acext_int8_gemm is (backend == "acext")
     assert kernel.weight_RowMajor is (backend != "triton")
 
-    if backend == "triton":
-        with pytest.raises(
-            NotImplementedError, match="cutlass_scaled_mm has no PPU implementation"
-        ):
-            kernel.apply_weights(layer, x, None)
-        return
-
-    out = kernel.apply_weights(layer, x, None)
+    bias = _randn(n, seed=28) if with_bias else None
+    out = kernel.apply_weights(layer, x, bias)
     torch.cuda.synchronize()
 
     # ``apply_weights`` re-quantises the activations itself, and with
@@ -341,6 +331,8 @@ def test_w8a8_int8_scaled_mm_backend_forcing(backend, monkeypatch):
         ref.dequant_int8(x_q_kernel, x_s_kernel),
         ref.dequant_int8(w_q.cuda(), w_s.cuda()),
     )
+    if bias is not None:
+        expected = expected + bias.float()
     assert out.shape == (m, n) and out.dtype == torch.bfloat16
     ref.assert_close(out, expected, "int8")
 

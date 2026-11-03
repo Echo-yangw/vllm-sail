@@ -46,10 +46,18 @@ For example, to request the MoE DeepGEMM backend:
 VLLM_SAIL_MOE_BACKEND=deepgemm vllm serve /path/to/model
 ```
 
-Leave backend variables unset for normal capability-based selection. An explicit
-choice still requires the corresponding library, device support and compatible
-tensor layout. Avoid setting overlapping backend controls while diagnosing a
-selection issue.
+Leave backend variables unset for normal capability-based selection.
+An explicit choice still requires the corresponding library, device support and
+compatible tensor layout. Avoid setting overlapping backend controls while
+diagnosing a selection issue.
+
+INT8 dense `deepgemm` is used for BF16 output without bias. Layers with bias
+use ACEXT when selected and available, otherwise Triton fuses bias in its GEMM.
+Symmetric INT8 dense layers fall back to Triton when neither DeepGEMM nor ACEXT
+is selected; `VLLM_SAIL_DENSE_BACKEND=triton` selects that path directly. Triton
+input quantization is controlled separately by `VLLM_SAIL_USE_TRITON_INT8_QUANT`.
+Asymmetric INT8 activation quantization still requires the unsupported CUTLASS
+zero-point path.
 
 On PPU, GDN decode `auto` prefers PLA when the legacy `VLLM_SAIL_USE_PLA`
 switch permits it and the model uses supported head dimensions and FP32 SSM
