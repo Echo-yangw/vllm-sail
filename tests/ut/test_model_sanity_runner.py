@@ -10,6 +10,8 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -168,6 +170,8 @@ def launch_external_double(tmp_path, monkeypatch):
         inventory=None,
         port=None,
         profile_key=sanity.BASELINE_PROFILE,
+        request_timeout=2,
+        ready_timeout=None,
     ):
         selected = sanity.load_profiles()[profile_key]
         selected_checkpoint = tmp_path / selected["checkpoint"]
@@ -204,14 +208,147 @@ def launch_external_double(tmp_path, monkeypatch):
             output=output,
             checkpoint_root=tmp_path,
             port=port,
-            ready_timeout=3 if mode == "stale" else 10,
-            request_timeout=2,
+            ready_timeout=(
+                ready_timeout
+                if ready_timeout is not None
+                else 3
+                if mode == "stale"
+                else 10
+            ),
+            request_timeout=request_timeout,
             with_stream=with_stream,
             execution_proof=execution_proof,
         )
         return result, output
 
     return launch
+
+
+@pytest.fixture
+def started_processes(monkeypatch):
+    popen = subprocess.Popen
+    children = []
+
+    def spawn(*args, **kwargs):
+        child = popen(*args, **kwargs)
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(sanity.subprocess, "Popen", spawn)
+    return children
+
+
+@pytest.mark.parametrize(
+    "mode", ["slow-json", "slow-partial-line", "slow-headers", "slow-metrics"]
+)
+def test_request_deadline_interrupts_trickling_responses_and_cleans_server(
+    launch_external_double, started_processes, mode
+):
+    result, output = launch_external_double(
+        mode=mode, with_stream=mode == "slow-partial-line", request_timeout=0.5
+    )
+    started = float((output / "slow-response-started.txt").read_text())
+    assert result["status"] == result["state"] == "failed", result
+    assert "TimeoutError" in result["error"]
+    # Allow process scheduling/cleanup slack, but not the multi-second response.
+    assert time.monotonic() - started < 2
+    assert result["cleanup"]["group_absent"]
+    assert not result["cleanup"]["forced"]
+    assert all(child.returncode is not None for child in started_processes)
+    assert json.loads((output / "result.json").read_text()) == result
+
+
+def test_readiness_deadline_cannot_accept_a_late_trickling_models_response(
+    launch_external_double, started_processes
+):
+    result, output = launch_external_double(
+        mode="slow-readiness", with_stream=False, ready_timeout=1.5
+    )
+    assert (output / "slow-response-started.txt").is_file()
+    assert result["status"] == "failed", result
+    assert "not ready" in result["error"]
+    assert result["elapsed_seconds"] < 3
+    assert result["cleanup"]["group_absent"]
+    assert not result["cleanup"]["forced"]
+    assert all(child.returncode is not None for child in started_processes)
+
+
+@pytest.mark.parametrize("signum", [signal.SIGINT, signal.SIGTERM])
+def test_cancellation_at_http_child_creation_reaps_request_and_server(
+    launch_external_double, monkeypatch, signum
+):
+    popen = subprocess.Popen
+    children = []
+
+    def interrupted(number, frame):
+        raise KeyboardInterrupt(f"received signal {number}")
+
+    def spawn(*args, **kwargs):
+        child = popen(*args, **kwargs)
+        children.append(child)
+        if len(children) == 2:  # The server is followed by its first HTTP request.
+            os.kill(os.getpid(), signum)
+        return child
+
+    previous = signal.signal(signum, interrupted)
+    monkeypatch.setattr(sanity.subprocess, "Popen", spawn)
+    try:
+        result, output = launch_external_double(with_stream=False)
+        assert result["status"] == "failed"
+        assert "KeyboardInterrupt" in result["error"]
+        assert result["cleanup"]["group_absent"]
+        assert len(children) == 2
+        assert all(child.returncode is not None for child in children)
+        assert json.loads((output / "result.json").read_text()) == result
+        assert signal.getsignal(signum) is interrupted
+    finally:
+        signal.signal(signum, previous)
+
+
+@pytest.mark.parametrize("signum", [signal.SIGINT, signal.SIGTERM])
+def test_cancellation_during_blocked_http_reaps_request_and_server(
+    launch_external_double, monkeypatch, tmp_path, signum
+):
+    popen = subprocess.Popen
+    children = []
+    delivered, stop = threading.Event(), threading.Event()
+    marker = tmp_path / (sanity.BASELINE_PROFILE + "-slow-headers-run")
+    marker /= "slow-response-started.txt"
+
+    def interrupted(number, frame):
+        raise KeyboardInterrupt(f"received signal {number}")
+
+    def spawn(*args, **kwargs):
+        child = popen(*args, **kwargs)
+        children.append(child)
+        return child
+
+    def interrupt_read():
+        while not stop.wait(0.01):
+            if marker.is_file():
+                delivered.set()
+                os.kill(os.getpid(), signum)
+                return
+
+    previous = signal.signal(signum, interrupted)
+    monkeypatch.setattr(sanity.subprocess, "Popen", spawn)
+    watcher = threading.Thread(target=interrupt_read)
+    watcher.start()
+    try:
+        result, output = launch_external_double(
+            mode="slow-headers", with_stream=False, request_timeout=5
+        )
+        assert delivered.is_set()
+        assert result["status"] == "failed"
+        assert "KeyboardInterrupt" in result["error"]
+        assert result["cleanup"]["group_absent"]
+        assert all(child.returncode is not None for child in children)
+        assert json.loads((output / "result.json").read_text()) == result
+        assert signal.getsignal(signum) is interrupted
+    finally:
+        stop.set()
+        watcher.join(timeout=2)
+        signal.signal(signum, previous)
 
 
 def test_glm_inline_reasoning_http_and_split_sse_round_trip(launch_external_double):
