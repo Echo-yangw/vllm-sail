@@ -101,3 +101,11 @@ See [Configuration](configuration.md) for runtime choices and defaults. Build
 coverage is defined by the [native source manifests](../developer_guide/kernels.md#source-ownership);
 an excluded operation fails with a capability diagnostic rather than being
 enabled by an environment variable.
+
+The GLM-5.3-Flash INT8 kpool path on Zhenwu 810E requires decode context
+parallel size 1. It rejects larger sizes until distributed cache mapping and
+global top-k merging are implemented. Zhenwu M890 keeps the upstream FP8 path.
+
+The INT8 kpool path rejects `VLLM_SAIL_KPOOL_DECODE_LOGITS=paged` because the
+paged kernel does not produce complete logits on PPU. Use the default
+`non_paged` backend.

@@ -79,7 +79,7 @@ _TRUTHY = ("true", "1", "yes", "on")
 #: Backend names accepted by both MoE and dense GEMM selection.
 GEMM_BACKENDS = ("deepgemm", "acext", "triton")
 GDN_DECODE_KERNELS = ("auto", "cuda", "pla", "triton")
-KPOOL_DECODE_LOGITS_BACKENDS = ("non_paged", "paged")
+KPOOL_DECODE_LOGITS_BACKENDS = ("non_paged",)
 
 
 def _env_names(name: str) -> tuple[str, ...]:
@@ -195,9 +195,8 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_SAIL_ENABLE_FP8_TO_INT8": _bool("VLLM_SAIL_ENABLE_FP8_TO_INT8", False),
     # Decode-time logits backend for the glm5_next kpool indexer.
     # ``non_paged`` (default) gathers the pool K cache and uses the non-paged
-    # int8 kernel (same one as prefill); ``paged`` uses int8_paged_mqa_logits.
-    # The PPU int8 paged kernel only writes 2 of every 64 logits (measured on
-    # PPU), so paged is opt-in until it is fixed.
+    # int8 kernel (same one as prefill). The paged INT8 kernel writes only
+    # part of the logits on PPU, so selecting it is rejected until fixed.
     "VLLM_SAIL_KPOOL_DECODE_LOGITS": _choice(
         "VLLM_SAIL_KPOOL_DECODE_LOGITS", "non_paged", KPOOL_DECODE_LOGITS_BACKENDS
     ),

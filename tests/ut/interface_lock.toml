@@ -11,7 +11,7 @@
 schema = 1
 vllm_version_range = ">=0.32.0,<0.33.0"
 key_interface_count = 10
-target_count = 281
+target_count = 286
 
 [[key_interface]]
 symbol = "vllm.platforms.interface.PlatformEnum"
@@ -127,7 +127,7 @@ kind = "module"
 module = "vllm/envs.py"
 symbol = "environment_variables"
 present = true
-fingerprint = "sha256:4bf241965cd3cfd79d82f94c308ea365b5abea4c592c2f28f26762092f205c5a"
+fingerprint = "sha256:6efb78915386dcd5112e40c65c6ba11eaa0e05916b1ea988145b7af8b4fcc1b8"
 
 [[patch_target]]
 name = "vllm.lora.layers.utils.try_get_optimal_moe_config"
@@ -768,6 +768,22 @@ module = "vllm/model_executor/layers/fused_moe/prepare_finalize/batched.py"
 symbol = "moe_kernel_quantize_input"
 present = true
 fingerprint = "sha256:0330af16e70d0f17a4937cd298a81d2a65c2069b4debd1fb61e711910ee78c8c"
+
+[[patch_target]]
+name = "vllm.model_executor.layers.fused_moe.prepare_finalize.deepep_ht.moe_kernel_quantize_input"
+kind = "module"
+module = "vllm/model_executor/layers/fused_moe/prepare_finalize/deepep_ht.py"
+symbol = "moe_kernel_quantize_input"
+present = true
+fingerprint = "sha256:12dd5d8f3119900d50febe5bd36cb1fc2d1f37a6d47d796f7361163846f09506"
+
+[[patch_target]]
+name = "vllm.model_executor.layers.fused_moe.prepare_finalize.deepep_ll.moe_kernel_quantize_input"
+kind = "module"
+module = "vllm/model_executor/layers/fused_moe/prepare_finalize/deepep_ll.py"
+symbol = "moe_kernel_quantize_input"
+present = true
+fingerprint = "sha256:9d0aa8be32e450045341843b92bee2fa29fdfe1fd5ca9079bb8da3bf7c71c077"
 
 [[patch_target]]
 name = "vllm.model_executor.layers.fused_moe.prepare_finalize.flashinfer_nvlink_one_sided.moe_kernel_quantize_input"
@@ -1824,6 +1840,30 @@ module = "vllm/models/minimax_m3/nvidia/model.py"
 symbol = "MiniMaxM3Model._init_fused_moe_finalize"
 present = true
 fingerprint = "sha256:c5e6dd8a47ae0b976fe057599226161ecef1129ad9e620528daf7c5787ca8f3b"
+
+[[patch_target]]
+name = "vllm.models.muse_spark.common.moe.fused_musespark1x_routing"
+kind = "module"
+module = "vllm/models/muse_spark/common/moe.py"
+symbol = "fused_musespark1x_routing"
+present = true
+fingerprint = "sha256:c5dc07e066663f901158504cc053d9a716ab64c0e4b3c0049558f0479f30d7d3"
+
+[[patch_target]]
+name = "vllm.models.muse_spark.common.ops.fused_routing.fused_musespark1x_routing"
+kind = "module"
+module = "vllm/models/muse_spark/common/ops/fused_routing.py"
+symbol = "fused_musespark1x_routing"
+present = true
+fingerprint = "sha256:af4878eb079bbad8be4bef8e5e235d14c55d414103c6faa39bee9b95745c47ec"
+
+[[patch_target]]
+name = "vllm.models.muse_spark.nvidia.model.fused_musespark1x_routing"
+kind = "module"
+module = "vllm/models/muse_spark/nvidia/model.py"
+symbol = "fused_musespark1x_routing"
+present = true
+fingerprint = "sha256:c5dc07e066663f901158504cc053d9a716ab64c0e4b3c0049558f0479f30d7d3"
 
 [[patch_target]]
 name = "vllm.platforms.interface.Platform.is_ppu"

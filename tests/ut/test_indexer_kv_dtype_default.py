@@ -1,112 +1,94 @@
 # SPDX-License-Identifier: Apache-2.0
-"""PPU capability decides the DSA indexer cache dtype, and "auto" follows it.
+"""The installed DSA indexer patch resolves PPU auto dtype through its provider."""
 
-The plugin replaces upstream's ``dsa_indexer_uses_fp4`` because MXFP4 on PPU
-comes from SAIL DeepGEMM rather than CUDA SM100. That replacement also moves
-the ``indexer_kv_dtype="auto"`` default: sm_89 (ZW-890P) now resolves to
-mxfp4, every other capability keeps upstream's fp8. Exercised here without
-torch, vLLM or a device by executing the patch's own function body.
-"""
-
-from __future__ import annotations
-
-import ast
-import sys
-import types
-from pathlib import Path
+from types import SimpleNamespace as NS
 
 import pytest
 
-PATCH_PATH = (
-    Path(__file__).parents[2] / "vllm_sail/patch/enhancement/attention/mla_indexer.py"
-)
-FUNCTION = "dsa_indexer_uses_fp4"
+from tests.ut.test_ppu_kernel_capabilities import load_patch
+from tests.ut.test_ppu_kernel_capabilities import modules as _modules
+
+modules = _modules
 
 
-class _AttentionConfig:
-    def __init__(self, indexer_kv_dtype: str) -> None:
-        self.indexer_kv_dtype = indexer_kv_dtype
+class AttentionConfig:
+    def __init__(self, value):
+        self.indexer_kv_dtype = value
 
-    def resolve_indexer_kv_dtype(self, default: str) -> str:
-        # Same contract as vllm.config.attention.AttentionConfig.
+    def resolve_indexer_kv_dtype(self, default):
         return default if self.indexer_kv_dtype == "auto" else self.indexer_kv_dtype
 
 
-def _config(indexer_kv_dtype: str) -> types.SimpleNamespace:
-    return types.SimpleNamespace(attention_config=_AttentionConfig(indexer_kv_dtype))
+def config(value):
+    return NS(attention_config=AttentionConfig(value))
 
 
-def _install_platform(monkeypatch, capability: int, *, ppu: bool = True):
-    platform = types.SimpleNamespace(
-        is_ppu=lambda: ppu,
-        is_device_capability=lambda cap: capability == cap,
-    )
-    vllm = types.ModuleType("vllm")
-    vllm.__path__ = []
-    platforms = types.ModuleType("vllm.platforms")
-    platforms.current_platform = platform
-    vllm.platforms = platforms
-    monkeypatch.setitem(sys.modules, "vllm", vllm)
-    monkeypatch.setitem(sys.modules, "vllm.platforms", platforms)
-    return platform
+@pytest.fixture
+def installed_indexer(modules, patch_utils_module):
+    def load(capability, *, ppu=True):
+        calls = []
+        platform = NS(
+            is_ppu=lambda: ppu, is_device_capability=lambda cap: capability == cap
+        )
+        modules("torch", float32="fp32")
+        modules("vllm.platforms", current_platform=platform)
+        modules("vllm_sail.patch.utils", patch_value=patch_utils_module.patch_value)
+        modules("vllm_sail.utils.deep_gemm")
 
+        class Builder:
+            def __init__(self, *args):
+                raise AssertionError("not constructing metadata in dtype test")
 
-def _load(monkeypatch, capability: int, *, ppu: bool = True):
-    _install_platform(monkeypatch, capability, ppu=ppu)
-    tree = ast.parse(PATCH_PATH.read_text(encoding="utf-8"), filename=str(PATCH_PATH))
-    definitions = [
-        node
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == FUNCTION
-    ]
-    assert len(definitions) == 1, f"{PATCH_PATH}: expected one {FUNCTION} definition"
-    definition = definitions[0]
-    # The patch decorator is the registration, not the behaviour under test.
-    definition.decorator_list = []
-    calls = []
+            def _split_indexer_prefill_chunks(self, *args, **kwargs):
+                raise AssertionError("not splitting prefills in dtype test")
 
-    def upstream_uses_fp4(vllm_config):
-        calls.append(vllm_config)
-        return "upstream"
+            def build(self, *args):
+                raise AssertionError("not building a step in dtype test")
 
-    namespace = {
-        "_upstream_uses_fp4": upstream_uses_fp4,
-        "_indexer_module": types.SimpleNamespace(
-            DSA_INDEXER_KV_DTYPES=("fp8", "mxfp4")
-        ),
-    }
-    module = ast.Module(body=[definition], type_ignores=[])
-    exec(compile(module, str(PATCH_PATH), "exec"), namespace)
-    return namespace[FUNCTION], calls
+        def upstream(value):
+            calls.append(value)
+            return "upstream"
+
+        provider = modules(
+            "vllm.v1.attention.backends.mla.indexer",
+            DeepseekV32IndexerMetadataBuilder=Builder,
+            get_paged_mqa_logits_metadata=lambda *args, **kwargs: None,
+            dsa_indexer_uses_fp4=upstream,
+            DSA_INDEXER_KV_DTYPES=("fp8", "mxfp4"),
+        )
+        patch = load_patch("vllm_sail/patch/enhancement/attention/mla_indexer.py")
+        assert provider.dsa_indexer_uses_fp4 is patch.dsa_indexer_uses_fp4
+        return provider.dsa_indexer_uses_fp4, calls
+
+    return load
 
 
 @pytest.mark.parametrize(
     "capability,configured,expected",
     [
-        # sm_89 (ZW-890P): "auto" is the MXFP4 cache.
         (89, "auto", True),
-        # Every other capability keeps upstream's fp8 default.
         (80, "auto", False),
-        # An explicit choice always wins over the capability default.
         (89, "fp8", False),
         (80, "fp8", False),
         (89, "mxfp4", True),
     ],
 )
-def test_indexer_cache_dtype_resolution(monkeypatch, capability, configured, expected):
-    uses_fp4, calls = _load(monkeypatch, capability)
-    assert uses_fp4(_config(configured)) is expected
+def test_indexer_cache_dtype_resolution(
+    installed_indexer, capability, configured, expected
+):
+    uses_fp4, calls = installed_indexer(capability)
+    assert uses_fp4(config(configured)) is expected
     assert calls == []
 
 
-def test_mxfp4_stays_rejected_below_sm_89(monkeypatch):
-    uses_fp4, _ = _load(monkeypatch, 80)
+def test_mxfp4_stays_rejected_below_sm_89(installed_indexer):
+    uses_fp4, _ = installed_indexer(80)
     with pytest.raises(ValueError, match="requires capability sm_89"):
-        uses_fp4(_config("mxfp4"))
+        uses_fp4(config("mxfp4"))
 
 
-def test_non_ppu_delegates_to_upstream(monkeypatch):
-    uses_fp4, calls = _load(monkeypatch, 100, ppu=False)
-    config = _config("auto")
-    assert uses_fp4(config) == "upstream"
-    assert calls == [config]
+def test_non_ppu_delegates_to_upstream(installed_indexer):
+    uses_fp4, calls = installed_indexer(100, ppu=False)
+    value = config("auto")
+    assert uses_fp4(value) == "upstream"
+    assert calls == [value]

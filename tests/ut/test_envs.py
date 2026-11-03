@@ -265,3 +265,14 @@ def test_gdn_prefill_e2e_resolver_stubs_match_production(monkeypatch, name):
         # Devices may have cached PLA submodules; blocking only the parent cannot simulate a missing package.
         namespace["_install_fake_pla"](monkeypatch)
     namespace[name](monkeypatch)
+
+
+@pytest.mark.parametrize(
+    "name", ["VLLM_SAIL_KPOOL_DECODE_LOGITS", "VLLM_PPU_KPOOL_DECODE_LOGITS"]
+)
+def test_kpool_rejects_incomplete_paged_logits(monkeypatch, name):
+    monkeypatch.delenv("VLLM_SAIL_KPOOL_DECODE_LOGITS", raising=False)
+    monkeypatch.delenv("VLLM_PPU_KPOOL_DECODE_LOGITS", raising=False)
+    monkeypatch.setenv(name, "paged")
+    with pytest.raises(ValueError, match="Expected one of non_paged"):
+        _ = envs.VLLM_SAIL_KPOOL_DECODE_LOGITS

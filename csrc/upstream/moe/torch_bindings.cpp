@@ -23,6 +23,9 @@ STABLE_TORCH_LIBRARY_FRAGMENT(_moe_C, m) {
       "bias, Tensor? input_ids, Tensor? tid2eid, Tensor? is_padding, "
       "Tensor? bias_vl=None, int image_sentinel_lo=0) -> ()");
 
+#ifdef USE_CUDA
+#endif
+
   // Calculate the result of moe by summing up the partial results
   // from all selected experts. topk_ids/expert_map are optional and, when
   // both given, enable pad-aware reduce that skips (token, expert)
@@ -83,6 +86,8 @@ STABLE_TORCH_LIBRARY_FRAGMENT(_moe_C, m) {
 STABLE_TORCH_LIBRARY_IMPL(_moe_C, CUDA, m) {
   m.impl("topk_softmax", TORCH_BOX(&topk_softmax));
   m.impl("topk_sigmoid", TORCH_BOX(&topk_sigmoid));
+#ifdef USE_CUDA
+#endif
   m.impl("topk_softplus_sqrt", TORCH_BOX(&topk_softplus_sqrt));
   m.impl("moe_sum", TORCH_BOX(&moe_sum));
   m.impl("moe_align_block_size", TORCH_BOX(&moe_align_block_size));
