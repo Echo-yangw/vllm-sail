@@ -46,6 +46,7 @@ if TYPE_CHECKING:
     VLLM_SAIL_USE_TRITON_INT8_QUANT: bool = True
     VLLM_SAIL_KPOOL_DECODE_LOGITS: str = "non_paged"
     VLLM_SAIL_KPOOL_MAX_DENSE_POOLS: int = 1 << 21
+    VLLM_SAIL_SPARSE_MLA_BF16_PREFILL: bool = False
     VLLM_SAIL_NVTX_PROFILE: bool = False
     VLLM_SAIL_NVTX_DUMP_TOPK: bool = False
     VLLM_SAIL_NVTX_VFA_DUMP_SEQLEN: bool = False
@@ -202,6 +203,21 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # -- Attention / linear attention --------------------------------------
     # Legacy getter only. Current PLA/Triton dispatch uses VLLM_SAIL_USE_PLA.
     "VLLM_SAIL_FUSED_GDN_DECODE": _bool("VLLM_SAIL_FUSED_GDN_DECODE", True),
+    # Force the sparse MLA backend's prefill steps onto the BF16 sparse kernel
+    # (``flash_mla_sparse_fwd``) instead of the FP8/NVFP4 decode kernel
+    # (``flash_mla_with_kvcache``) that mixed-batch mode uses for prefill. The
+    # quantized paged cache is upconverted into the BF16 prefill workspace
+    # first, so this costs extra memory and bandwidth; it is meant for accuracy
+    # checks and for A/B benchmarking the two kernels. Kernel selection is
+    # unchanged for bf16 caches (already on the BF16 prefill kernel) and for
+    # decode steps; the head-padding narrowing described below applies to both
+    # cache types. PPU's prefill kernel picks its query-head tile (kBlockM =
+    # 16/32/64) from the head count, so the switch narrows the prefill head
+    # padding from a flat 64 to that tile and drops the padded-head compute. See
+    # ``patch/enhancement/attention/sparse_mla_bf16_prefill.py``.
+    "VLLM_SAIL_SPARSE_MLA_BF16_PREFILL": _bool(
+        "VLLM_SAIL_SPARSE_MLA_BF16_PREFILL", False
+    ),
     # -- Distributed MoE ---------------------------------------------------
     # DeepEP low-latency deferred recv hook. The hook only pays off on backends
     # that can overlap the deferred receive with other compute; setting this to

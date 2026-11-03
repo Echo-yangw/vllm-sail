@@ -74,6 +74,7 @@ native build and device correctness verification before deployment.
 | `VLLM_SAIL_FORCE_MOE_WNA16_CUDA` | `0` | Request the native WNA16 path; raises if the kernel is unavailable |
 | `VLLM_SAIL_ENABLE_MOE_MARLIN` | `0` | Legacy selection gate; does not enable excluded native Marlin kernels |
 | `VLLM_SAIL_FUSED_GDN_DECODE` | `1` | Legacy getter; dispatch now uses `VLLM_SAIL_USE_PLA` |
+| `VLLM_SAIL_SPARSE_MLA_BF16_PREFILL` | `0` | Run sparse MLA prefill on the BF16 sparse kernel instead of the mixed-batch FP8 decode kernel; costs memory/bandwidth, meant for accuracy A/B checks |
 
 ## Profiling
 

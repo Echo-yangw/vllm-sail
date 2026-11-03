@@ -24,6 +24,7 @@ from vllm_sail.patch.enhancement.attention import (
     flashmla_ops,  # noqa: F401
     flashmla_backend,  # noqa: F401
     flashmla_sparse_backend,  # noqa: F401
+    sparse_mla_bf16_prefill,  # noqa: F401
     kv_cache_interface,  # noqa: F401
     mhc,  # noqa: F401
     mhc_tilelang,  # noqa: F401

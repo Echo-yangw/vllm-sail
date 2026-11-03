@@ -86,6 +86,18 @@ _ATTENTION_TARGETS = (
         "FlashMLASparseMetadataBuilder.__init__",
     ),
     (
+        "vllm.v1.attention.backends.mla.flashmla_sparse",
+        "use_fp8_mixed_batch",
+    ),
+    (
+        "vllm.v1.attention.backends.mla.flashmla_sparse",
+        "FlashMLASparseImpl.__init__",
+    ),
+    (
+        "vllm.v1.attention.backends.mla.flashmla_sparse",
+        "FlashMLASparseImpl.prefill_padding",
+    ),
+    (
         "vllm.v1.attention.backends.mla.prefill.flash_attn",
         "FlashAttnPrefillBackend.__init__",
     ),
