@@ -58,6 +58,13 @@ is allowed; reruns retain separate evidence. A quick probe sends one ordinary
 request. Qualification also uses `--with-stream`, which sends one additional
 request and requires `[DONE]` and a complete final answer.
 
+Request deadlines cover connection setup, headers and the complete JSON/SSE
+response. The runner uses a short-lived HTTP child and reaps it before propagating
+timeout or cancellation to model-service cleanup. Readiness probes use their
+remaining overall readiness budget; metrics reads are bounded too. A peer that
+trickles bytes or never completes an SSE line cannot extend the request budget.
+Helper startup is included; subsequent owned-service cleanup has its own wait.
+
 Exact serving profiles can spend tens of minutes on a cold start. Record weight
 loading, graph capture and JIT warmup separately from request latency. Keep
 additive compiler/model caches separate from immutable package-byte evidence;

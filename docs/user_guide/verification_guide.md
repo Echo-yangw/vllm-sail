@@ -200,6 +200,9 @@ shutdown ERROR logs, and failed cleanup fail the attempt. The process exits
 nonzero on failure and retains its invocation, installed package metadata,
 responses, metrics, serving log and result. Adjust readiness, request and token
 budgets explicitly with `--ready-timeout`, `--request-timeout`, and `--max-tokens`.
+Each request budget covers connection setup, response headers and the complete
+body, including a streamed response that never finishes a line. Expiration
+fails the attempt and enters service cleanup; cleanup has its own bounded wait.
 
 This is a short inference check for the selected configuration. It does not
 replace the accuracy evaluation below, kernel correctness checks, package-byte
