@@ -57,7 +57,7 @@ def install_loader(monkeypatch):
                 self.config = SimpleNamespace(n_routed_experts=0, n_shared_experts=0)
                 self.model = SimpleNamespace(mtp_start_layer_idx=0, num_mtp_layers=1)
                 self.parameters = vllm_config.parameters
-                self.is_fused_shared_expert_enabled = resolved_shared
+                self.fused_shared_expert_layers = {0} if resolved_shared else set()
 
             def named_parameters(self):
                 return self.parameters.items()
@@ -97,6 +97,9 @@ def install_loader(monkeypatch):
         )
         register(
             "vllm.model_executor.models.utils",
+            extract_layer_index=lambda name: int(
+                name.split(".layers.")[1].split(".")[0]
+            ),
             get_pp_missing_layer_names=lambda model: [],
             get_spec_layer_idx_from_weight_name=spec_layer,
         )
@@ -231,6 +234,23 @@ def test_disabled_model_fusion_keeps_shared_projection_whole(install_loader):
     )
     target = install_loader(lambda *a: False, resolved_shared=False, global_shared=True)
     model = target(vllm_config=SimpleNamespace(fp4=False, parameters={name: parameter}))
+    model.config.n_shared_experts = 2
+    value = object()
+    assert model.load_weights(
+        [("model.layers.0.mlp.shared_experts.gate_proj.weight", value)]
+    ) == {name}
+    assert writes == [(parameter, value, 0)]
+
+
+def test_another_layers_fusion_keeps_this_shared_projection_whole(install_loader):
+    writes = []
+    name = "model.layers.0.mlp.shared_experts.gate_up_proj.weight"
+    parameter = SimpleNamespace(
+        weight_loader=lambda param, value, shard: writes.append((param, value, shard))
+    )
+    target = install_loader(lambda *a: False, resolved_shared=True, global_shared=True)
+    model = target(vllm_config=SimpleNamespace(fp4=False, parameters={name: parameter}))
+    model.fused_shared_expert_layers = {1}
     model.config.n_shared_experts = 2
     value = object()
     assert model.load_weights(

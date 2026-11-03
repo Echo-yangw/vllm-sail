@@ -47,11 +47,16 @@ from __future__ import annotations
 import ast
 import importlib
 import inspect
+import sys
 import textwrap
 
 from vllm.logger import init_logger
 
 from vllm_sail.patch.utils import patch
+from vllm_sail.patch.bodies import bind_body
+from vllm_sail.model_executor.warmup.ppu_kernel_warmup import (
+    kernel_warmup as _ppu_warmup_body,
+)
 
 logger = init_logger(__name__)
 
@@ -238,7 +243,8 @@ def _ppu_deep_gemm_warmup_enabled() -> bool:
 
 
 try:
-    _upstream_kernel_warmup = importlib.import_module(_MODULE).kernel_warmup
+    _upstream_module = importlib.import_module(_MODULE)
+    _upstream_kernel_warmup = _upstream_module.kernel_warmup
 except ImportError as exc:
     logger.warning(
         "vllm-sail: skipping the %s patch because the target module did not "
@@ -248,6 +254,7 @@ except ImportError as exc:
         exc,
     )
 else:
+    _ppu_upstream_warmup = bind_body(_ppu_warmup_body, _upstream_module)
     _upstream_cutedsl_warmup = importlib.import_module(_CUTEDSL_MODULE).cutedsl_warmup
 
     @patch(
@@ -274,7 +281,7 @@ else:
         _MODULE,
         "kernel_warmup",
         reason=(
-            "Exclude unsupported CuTeDSL JIT registrations on PPU, and the "
+            "Exclude NVIDIA-only MiniMax MSA imports and unsupported CuTeDSL JIT registrations on PPU, and the "
             "JIT warmups whose Triton kernels use fp8e4nv, which PPU 1.0's "
             "sm80-class capability cannot compile. "
             "Register native top-k/top-p sampler warmups that V2 only "
@@ -302,7 +309,12 @@ else:
             _exclude_ppu_cutedsl_registrations(worker)
             _register_ppu_sampler_warmups(worker)
             _exclude_sm80_fp8_registrations(worker)
-        result = _upstream_kernel_warmup(worker, process_local_only=process_local_only)
+        upstream = (
+            _ppu_upstream_warmup
+            if current_platform.is_ppu()
+            else _upstream_kernel_warmup
+        )
+        result = upstream(worker, process_local_only=process_local_only)
 
         if process_local_only or not current_platform.is_ppu():
             return result
@@ -317,3 +329,16 @@ else:
                 worker.scheduler_config.max_num_batched_tokens,
             )
         return result
+
+    _worker_module = sys.modules.get("vllm.v1.worker.gpu_worker")
+    if (
+        _worker_module is not None
+        and getattr(_worker_module, "kernel_warmup", None) is _upstream_kernel_warmup
+    ):
+        patch(
+            "vllm.v1.worker.gpu_worker",
+            "kernel_warmup",
+            reason="Rebind the preloaded worker alias so PPU avoids NVIDIA-only MSA warmup imports.",
+            affected_versions=">=0.32.0,<0.33.0",
+            remove_when="The worker resolves warmups through a platform-aware registry.",
+        )(kernel_warmup)

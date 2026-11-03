@@ -93,9 +93,7 @@ def may_reinitialize_input_batch(self, kv_cache_config: KVCacheConfig) -> None:
 def rejection_sample(
     # [num_logits, V]
     target_logits: torch.Tensor,
-    # [max_num_reqs, num_speculative_steps, V], or this rank's rows under
-    # batch-sharded sampling, indexed by req_state_idx // draft_logits_num_shards.
-    draft_logits: torch.Tensor | None,
+    draft_logits_cache: DraftLogitsCache | None,
     # [num_logits]
     draft_sampled: torch.Tensor,
     # [num_reqs + 1]
@@ -124,9 +122,13 @@ def rejection_sample(
     fly_window_size: int = 0,
     fly_entropy_threshold: float = 0.3,
     fly_entropy_top_k: int = 3,
-    draft_logits_num_shards: int = 1,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     assert target_logits.ndim == 2 and target_logits.stride(-1) == 1
+    draft_logits = None
+    draft_logits_row_mapping = None
+    if draft_logits_cache is not None:
+        draft_logits = draft_logits_cache.values
+        draft_logits_row_mapping = draft_logits_cache.row_mapping
     assert draft_logits is None or (
         draft_logits.ndim == 3 and draft_logits.stride(-1) == 1
     )
@@ -219,6 +221,7 @@ def rejection_sample(
         draft_logits,
         draft_logits_stride_0,
         draft_logits_stride_1,
+        draft_logits_row_mapping,
         expanded_idx_mapping,
         expanded_local_pos,
         temperature,
@@ -226,7 +229,6 @@ def rejection_sample(
         num_logits,
         BLOCK_SIZE=VOCAB_BLOCK_SIZE,
         HAS_DRAFT_LOGITS=has_draft_logits,
-        DRAFT_LOGITS_NUM_SHARDS=draft_logits_num_shards,
     )
 
     # Precompute the running joint ratio and residual mass for block
@@ -252,6 +254,7 @@ def rejection_sample(
             draft_logits,
             draft_logits_stride_0,
             draft_logits_stride_1,
+            draft_logits_row_mapping,
             draft_local_max,
             draft_local_max.stride(0),
             draft_local_sumexp,
@@ -262,7 +265,6 @@ def rejection_sample(
             vocab_num_blocks,
             PADDED_VOCAB_NUM_BLOCKS=padded_vocab_num_blocks,
             HAS_DRAFT_LOGITS=has_draft_logits,
-            DRAFT_LOGITS_NUM_SHARDS=draft_logits_num_shards,
             num_warps=1,
         )
 
@@ -287,6 +289,7 @@ def rejection_sample(
                 draft_logits,
                 draft_logits_stride_0,
                 draft_logits_stride_1,
+                draft_logits_row_mapping,
                 draft_local_max,
                 draft_local_max.stride(0),
                 draft_local_sumexp,
@@ -300,7 +303,6 @@ def rejection_sample(
                 vocab_num_blocks,
                 BLOCK_SIZE=VOCAB_BLOCK_SIZE,
                 PADDED_VOCAB_NUM_BLOCKS=padded_vocab_num_blocks,
-                DRAFT_LOGITS_NUM_SHARDS=draft_logits_num_shards,
             )
         else:
             local_residual_mass = None
@@ -334,6 +336,7 @@ def rejection_sample(
         draft_logits,
         draft_logits_stride_0,
         draft_logits_stride_1,
+        draft_logits_row_mapping,
         draft_local_max,
         draft_local_max.stride(0),
         draft_local_sumexp,
@@ -352,7 +355,6 @@ def rejection_sample(
         vocab_num_blocks,
         PADDED_VOCAB_NUM_BLOCKS=padded_vocab_num_blocks,
         HAS_DRAFT_LOGITS=has_draft_logits,
-        DRAFT_LOGITS_NUM_SHARDS=draft_logits_num_shards,
         SYNTHETIC_MODE=synthetic_conditional_rates is not None,
         USE_BLOCK_VERIFICATION=use_block_verification,
         FLY_WINDOW_SIZE=fly_window_size,
@@ -382,6 +384,7 @@ def rejection_sample(
         draft_logits,
         draft_logits_stride_0,
         draft_logits_stride_1,
+        draft_logits_row_mapping,
         draft_rejected_logsumexp,
         num_sampled,
         cu_num_logits,
@@ -400,7 +403,6 @@ def rejection_sample(
         vocab_size,
         BLOCK_SIZE=RESAMPLE_BLOCK_SIZE,
         HAS_DRAFT_LOGITS=has_draft_logits,
-        DRAFT_LOGITS_NUM_SHARDS=draft_logits_num_shards,
         USE_FP64=use_fp64,
         USE_BLOCK_VERIFICATION=use_block_verification,
         CONTEXT_WIDTH=context_width,
@@ -409,10 +411,6 @@ def rejection_sample(
     )
 
     # Insert the resampled tokens into the output sampled.
-    # PPU MODIFICATION: begin
-    # NOTE: num_warps=1 keeps the read-modify-write of num_sampled within a
-    # single warp, so no thread can observe another warp's increment.
-    # PPU MODIFICATION: end
     _insert_resampled_kernel[(num_reqs,)](
         sampled,
         sampled.stride(0),
@@ -426,9 +424,8 @@ def rejection_sample(
         expanded_idx_mapping,
         temperature,
         PADDED_RESAMPLE_NUM_BLOCKS=padded_resample_num_blocks,
-        # PPU MODIFICATION: begin
+        # Keep the PPU sampled-count update within one warp.
         num_warps=1,
-        # PPU MODIFICATION: end
     )
     return sampled, num_sampled
 

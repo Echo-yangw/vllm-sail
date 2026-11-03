@@ -53,7 +53,7 @@ def check_launches(body, block, draft, fp64, upstream=None):
     sampler = function(body, "rejection_sample", namespace)
     sampled, count = sampler(
         Tensor(13, 8193),
-        Tensor(2, 7, 8193) if draft else None,
+        NS(values=Tensor(2, 7, 8193), row_mapping=None) if draft else None,
         Tensor(13),
         Tensor(3),
         Tensor(13),
