@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """PPU patches for ``vllm.v1.attention.backends.mla.flashmla_sparse``.
 
-Three PPU-gated fork changes, applied by delegation:
+Four PPU-gated fork changes, applied by delegation:
 
 * ``FlashMLASparseBackend.supports_compute_capability`` accepts capability
   majors 8, 9 and 10 on PPU (upstream: 9 and 10).
@@ -11,6 +11,9 @@ Three PPU-gated fork changes, applied by delegation:
   ``max_num_sm_parts`` on PPU ("PPU uses full SM count"). That value only feeds
   the ``tile_scheduler_metadata_buffer`` allocation, so the upstream ``__init__``
   runs first and the buffer is re-allocated with the PPU size afterwards.
+* ``FlashMLASparseImpl._compute_fp8_decode_padded_heads`` narrows the FP8
+  decode/mixed-batch head padding from the flat 64/128 to PPU's actual query
+  head tile (16/32/64/128).
 """
 
 from __future__ import annotations
@@ -33,6 +36,9 @@ _upstream_supports_combination = (
     _flashmla_sparse_backend.FlashMLASparseBackend.supports_combination
 )
 _upstream_builder_init = _flashmla_sparse_backend.FlashMLASparseMetadataBuilder.__init__
+_upstream_fp8_decode_padded_heads = (
+    _flashmla_sparse_backend.FlashMLASparseImpl._compute_fp8_decode_padded_heads
+)
 
 
 @patch(
@@ -158,3 +164,42 @@ def builder_init(
             dtype=torch.int32,
             device=device,
         )
+
+
+def _ppu_fp8_decode_head_tile(num_heads: int) -> int:
+    """PPU query-head tile for ``num_heads`` (upstream pads to a flat 64/128)."""
+    if num_heads <= 16:
+        return 16
+    if num_heads <= 32:
+        return 32
+    if num_heads <= 64:
+        return 64
+    return 128
+
+
+@patch(
+    _MODULE,
+    "FlashMLASparseImpl._compute_fp8_decode_padded_heads",
+    reason=(
+        "Upstream pads the FP8 sparse decode kernel's query heads to a flat 64 "
+        "or 128 because the NVIDIA kernel only runs those head counts. The PPU "
+        "kernel folds the heads into the query length and picks its M tile "
+        "(kBlockM = 16/32/64) from the folded length, so the padded heads are "
+        "pure waste: with 16 heads per rank three quarters of every M tile "
+        "computes discarded rows, and the mixed-batch chunk budget shrinks "
+        "proportionally (chunk tokens scale as 64 / padded_heads). Narrow the "
+        "padding to the tile actually covering the head count. The zero-padded "
+        "output rows are sliced off by actual head count either way, so this "
+        "changes no numerics."
+    ),
+    affected_versions=_AFFECTED,
+    remove_when=(
+        "upstream derives the FP8 decode head padding per platform instead of "
+        "hard-coding the NVIDIA 64/128 kernel constraint, or the PPU kernel "
+        "stops tiling the folded query length by head count."
+    ),
+)
+def compute_fp8_decode_padded_heads(num_heads: int) -> int:
+    if not current_platform.is_ppu() or num_heads <= 0:
+        return _upstream_fp8_decode_padded_heads(num_heads)
+    return _ppu_fp8_decode_head_tile(num_heads)

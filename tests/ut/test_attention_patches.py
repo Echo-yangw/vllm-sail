@@ -95,6 +95,10 @@ _ATTENTION_TARGETS = (
     ),
     (
         "vllm.v1.attention.backends.mla.flashmla_sparse",
+        "FlashMLASparseImpl._compute_fp8_decode_padded_heads",
+    ),
+    (
+        "vllm.v1.attention.backends.mla.flashmla_sparse",
         "FlashMLASparseImpl.prefill_padding",
     ),
     (
