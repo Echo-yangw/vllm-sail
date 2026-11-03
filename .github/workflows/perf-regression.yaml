@@ -1,0 +1,147 @@
+name: Perf Regression
+
+# Weekly dual-chip kernel performance monitoring. Every run builds wheels from
+# the exact SAIL commit that triggered this workflow; no preview or historical
+# build is queried or reused. Reviewed golden baselines remain read-only in the
+# checkout. Each lane uploads its pending candidate and comparison report for a
+# human-maintained golden update PR.
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: Runtime container image the PPU pod runs
+        required: true
+        default: reg.docker.alibaba-inc.com/ai-tmp/llm:pytorch2.13.0-ubuntu24.04-cuda13.0-vllm0.27.0-py312-ppu202609111952
+        type: string
+  # Weekly Monday 20:00 UTC = Tuesday 04:00 CST.
+  schedule:
+    - cron: "0 20 * * 1"
+
+permissions:
+  contents: read
+  actions: read
+cache-mode: none
+
+concurrency:
+  group: perf-regression-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build weekly perf wheels
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/_ppu-build.yaml
+    with:
+      pr_head_sha: ${{ github.sha }}
+
+  perf:
+    name: perf ${{ matrix.chip }} kernel
+    needs: build
+    runs-on: k8s-runner-group-cpu-thead
+    timeout-minutes: 90
+    container:
+      image: ${{ inputs.image || 'reg.docker.alibaba-inc.com/ai-tmp/llm:pytorch2.13.0-ubuntu24.04-cuda13.0-vllm0.27.0-py312-ppu202609111952' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - chip: 810e
+            board: OAM-810E
+            nproc: 8
+            timeout: 60
+          - chip: 890p
+            board: ZW-M890P
+            nproc: 8
+            timeout: 60
+
+    steps:
+      - name: Disable internal GitHub mirror rewrite
+        shell: bash
+        run: |
+          for scope in system global; do
+            echo "=== ${scope} insteadOf before ==="
+            git config --${scope} --get-regexp '^url\..*\.insteadof$' 2>/dev/null || true
+            while IFS= read -r section; do
+              [ -n "${section}" ] || continue
+              git config --${scope} --unset-all "${section}.insteadOf" 2>/dev/null || true
+            done < <(git config --${scope} --get-regexp '^url\..*\.insteadof$' 2>/dev/null | awk '$2 ~ /github\.com/ {sub(/\.insteadof$/, "", $1); print $1}')
+          done
+
+      - name: Require disabled cache access
+        uses: actions/github-script@v7
+        with:
+          script: |
+            if (process.env.ACTIONS_CACHE_MODE !== 'none') {
+              core.setFailed('PPU CI requires cache-mode: none');
+            }
+
+      - name: Check out vLLM SAIL
+        uses: actions/checkout@v4
+        with:
+          github-server-url: https://github.com
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Verify checked-out revision
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: test "$(git -c safe.directory="$PWD" rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Download fresh CI-built wheels
+        uses: actions/download-artifact@v4
+        with:
+          name: ppu-wheels-${{ github.run_id }}
+          path: wheels
+          run-id: ${{ github.run_id }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+
+      - name: Verify wheel manifest against current sources
+        shell: bash
+        env:
+          EXPECTED_SAIL_COMMIT: ${{ github.sha }}
+        run: |
+          EXPECTED_VLLM_COMMIT="$(tr -d '[:space:]' < .github/vllm-main-verified.commit)"
+          python scripts/ci/ppu_wheel_manifest.py verify wheels \
+            --vllm-commit "${EXPECTED_VLLM_COMMIT}" \
+            --sail-commit "${EXPECTED_SAIL_COMMIT}"
+
+      - name: Run perf regression (${{ matrix.chip }} kernel)
+        uses: t-head/ppu-scheduler-action@main
+        with:
+          image: ${{ inputs.image || 'reg.docker.alibaba-inc.com/ai-tmp/llm:pytorch2.13.0-ubuntu24.04-cuda13.0-vllm0.27.0-py312-ppu202609111952' }}
+          nnodes: 0
+          nproc_per_node: ${{ matrix.nproc }}
+          namespace: ppu-sched
+          node_selector: board-type=${{ matrix.board }}
+          timeout_minutes: ${{ matrix.timeout }}
+          cleanup_policy: always
+          job_suffix: perf-${{ matrix.chip }}-kernel
+          source_dir: /workspace/source
+          artifact_paths: wheels/**
+          extra_env: SUITE=kernel,TEST_PATH=tests/e2e/perf/test_kernel_perf.py,PYTEST_MARKER=perf,RESULTS_DIR=/mnt/wl_nas/devops/${{ github.run_id }}-${{ github.run_attempt }}/perf-${{ matrix.chip }}-kernel,WHEELS_DIR=/workspace/source/wheels,EXPECTED_SAIL_COMMIT=${{ github.sha }},VLLM_USE_RUST_FRONTEND=0,VLLM_USE_RUST_BENCH=0
+          container_options: |
+            privileged: true
+            host_ipc: true
+            host_network: true
+            shm_size: 32Gi
+          command: >-
+            cd /workspace/source &&
+            export EXPECTED_VLLM_COMMIT="$(tr -d '[:space:]' < .github/vllm-main-verified.commit)" &&
+            bash scripts/ci/perf_regression.sh
+
+      - name: Upload perf artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ppu-perf-${{ matrix.chip }}-kernel-${{ github.run_id }}
+          path: |
+            /wl_nas/devops/${{ github.run_id }}-${{ github.run_attempt }}/perf-${{ matrix.chip }}-kernel/*.xml
+            /wl_nas/devops/${{ github.run_id }}-${{ github.run_attempt }}/perf-${{ matrix.chip }}-kernel/*.log
+            /wl_nas/devops/${{ github.run_id }}-${{ github.run_attempt }}/perf-${{ matrix.chip }}-kernel/report/**
+            /wl_nas/devops/${{ github.run_id }}-${{ github.run_attempt }}/perf-${{ matrix.chip }}-kernel/baselines/**
+          if-no-files-found: warn
+          retention-days: 30

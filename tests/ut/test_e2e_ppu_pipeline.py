@@ -21,6 +21,9 @@ GOLDEN = ROOT / "tests" / "e2e" / "models" / "_golden"
 MODEL_WORKFLOW = ROOT / ".github" / "workflows" / "_ppu-model-tests.yaml"
 ACCURACY_WORKFLOW = ROOT / ".github" / "workflows" / "_ppu-accuracy-tests.yaml"
 NIGHTLY_WORKFLOW = ROOT / ".github" / "workflows" / "ppu-accuracy-nightly.yaml"
+KERNEL_PERF_WORKFLOW = ROOT / ".github" / "workflows" / "_ppu-kernel-perf.yaml"
+KERNEL_PERF_LABEL_WORKFLOW = ROOT / ".github" / "workflows" / "kernel-perf-label.yaml"
+PERF_REGRESSION_WORKFLOW = ROOT / ".github" / "workflows" / "perf-regression.yaml"
 DEBUG_WORKFLOW = ROOT / ".github" / "workflows" / "ppu-debug.yaml"
 
 
@@ -662,7 +665,7 @@ def test_accuracy_script_seeds_reviewed_goldens_into_the_writable_tree() -> None
 
 def test_runtime_wrapper_exposes_accuracy_mode_and_environment() -> None:
     text = RUNTIME.read_text()
-    assert "pin-ut|model-test|model-accuracy" in text
+    assert "pin-ut|model-test|model-accuracy|kernel-perf" in text
     assert "/source/scripts/ci/ppu_e2e_accuracy.sh" in text
     for marker in (
         "HF_HOME",
@@ -735,11 +738,13 @@ def test_accuracy_entrypoints_are_the_manual_debug_and_the_nightly_runs() -> Non
     inputs = debug[True]["workflow_dispatch"]["inputs"]
     assert set(inputs) == {
         "build_run_id",
+        "wheel_source_sha",
         "target",
         "models",
         "accuracy_models",
     }
     assert "accuracy-tests" in inputs["target"]["options"]
+    assert "kernel-perf" in inputs["target"]["options"]
     assert debug["jobs"]["accuracy-tests"]["uses"] == (
         "./.github/workflows/_ppu-accuracy-tests.yaml"
     )
@@ -757,10 +762,15 @@ def test_accuracy_entrypoints_are_the_manual_debug_and_the_nightly_runs() -> Non
         "./.github/workflows/_ppu-accuracy-tests.yaml"
     )
 
-    # Accuracy still never rides the per-PR gate.
+    assert debug["jobs"]["kernel-perf"]["uses"] == (
+        "./.github/workflows/_ppu-kernel-perf.yaml"
+    )
+
+    # kernel-perf is no longer part of the per-PR gate.
     automatic = (ROOT / ".github/workflows/ppu-build-and-test.yaml").read_text()
     assert "_ppu-accuracy-tests.yaml" not in automatic
     assert "model-accuracy" not in automatic
+    assert "_ppu-kernel-perf.yaml" not in automatic
 
 
 def test_nightly_select_step_labels_jobs_with_the_case_id() -> None:
@@ -823,3 +833,133 @@ def test_workflows_pull_wheels_by_run_id_and_keep_python_frontend() -> None:
     smoke_text = SMOKE.read_text()
     assert "VLLM_USE_RUST_FRONTEND=0" in smoke_text
     assert "VLLM_USE_RUST_BENCH=0" in smoke_text
+
+
+def test_kernel_perf_label_workflow_structure() -> None:
+    """kernel-perf-label.yaml triggers independently via the kernel-perf label."""
+    workflow = _workflow(KERNEL_PERF_LABEL_WORKFLOW)
+    assert workflow["name"] == "Kernel Perf Gate"
+    assert set(workflow[True]) == {"pull_request"}
+    pr = workflow[True]["pull_request"]
+    assert set(pr["types"]) == {"labeled", "synchronize", "reopened"}
+
+    # Fresh-build design: build + kernel-perf (no resolve-build)
+    assert set(workflow["jobs"]) == {"build", "kernel-perf"}
+
+    build = workflow["jobs"]["build"]
+    # Build job is a reusable workflow call to _ppu-build.yaml
+    assert build["uses"] == "./.github/workflows/_ppu-build.yaml"
+    # Guard: label + not draft + correct label on labeled event
+    assert "kernel-perf" in build["if"]
+    assert "!github.event.pull_request.draft" in build["if"]
+    assert "github.event.label.name == 'kernel-perf'" in build["if"]
+    # Build checks out and packages the PR head
+    assert build["with"]["pr_head_sha"] == ("${{ github.event.pull_request.head.sha }}")
+
+    kp = workflow["jobs"]["kernel-perf"]
+    assert kp["needs"] == "build"
+    assert kp["uses"] == "./.github/workflows/_ppu-kernel-perf.yaml"
+    assert kp["with"]["pr_mode"] is True
+    assert kp["with"]["pr_head_sha"] == ("${{ github.event.pull_request.head.sha }}")
+    # build_run_id uses the caller's own run_id (fresh build, not external)
+    assert kp["with"]["build_run_id"] == "${{ github.run_id }}"
+    assert kp["with"]["wheel_source_sha"] == (
+        "${{ github.event.pull_request.head.sha }}"
+    )
+
+    # This workflow is NOT part of ppu-build-and-test gate
+    gate_text = (ROOT / ".github/workflows/ppu-build-and-test.yaml").read_text()
+    assert "kernel-perf-label" not in gate_text
+
+
+def test_weekly_perf_builds_current_commit_and_never_resolves_old_runs() -> None:
+    workflow = _workflow(PERF_REGRESSION_WORKFLOW)
+    assert set(workflow[True]) == {"workflow_dispatch", "schedule"}
+    assert workflow[True]["schedule"] == [{"cron": "0 20 * * 1"}]
+    assert "build_run_id" not in workflow[True]["workflow_dispatch"]["inputs"]
+    assert workflow["permissions"] == {"contents": "read", "actions": "read"}
+    assert workflow["cache-mode"] == "none"
+    assert set(workflow["jobs"]) == {"build", "perf"}
+
+    build = workflow["jobs"]["build"]
+    assert build["uses"] == "./.github/workflows/_ppu-build.yaml"
+    assert build["with"] == {"pr_head_sha": "${{ github.sha }}"}
+
+    perf = workflow["jobs"]["perf"]
+    assert perf["needs"] == "build"
+    assert {entry["chip"] for entry in perf["strategy"]["matrix"]["include"]} == {
+        "810e",
+        "890p",
+    }
+    download = next(
+        step
+        for step in perf["steps"]
+        if step.get("uses") == "actions/download-artifact@v4"
+    )
+    assert download["with"]["name"] == "ppu-wheels-${{ github.run_id }}"
+    assert download["with"]["run-id"] == "${{ github.run_id }}"
+    verify = next(
+        step
+        for step in perf["steps"]
+        if step.get("name") == "Verify wheel manifest against current sources"
+    )
+    assert verify["env"]["EXPECTED_SAIL_COMMIT"] == "${{ github.sha }}"
+    assert ".github/vllm-main-verified.commit" in verify["run"]
+    assert "--vllm-commit" in verify["run"]
+    assert "--sail-commit" in verify["run"]
+
+    text = PERF_REGRESSION_WORKFLOW.read_text()
+    assert "ppu-build-and-test.yaml/runs" not in text
+    assert "api.github.com" not in text
+    assert "latest successful" not in text
+    assert "EXPECTED_SAIL_COMMIT=${{ github.sha }}" in text
+
+
+def test_kernel_perf_workflow_is_call_only_and_uses_docker_runner() -> None:
+    workflow = _workflow(KERNEL_PERF_WORKFLOW)
+    assert workflow["name"] == "PPU kernel performance"
+    assert set(workflow[True]) == {"workflow_call"}
+    assert set(workflow["jobs"]) == {"kernel-perf"}
+    kp = workflow["jobs"]["kernel-perf"]
+    assert kp["runs-on"] == "8-ppu-m890p"
+    assert kp["timeout-minutes"] == 60
+    assert "container" not in kp
+    inputs = workflow[True]["workflow_call"]["inputs"]
+    assert inputs["wheel_source_sha"]["required"] is True
+    assert inputs["wheel_source_sha"]["type"] == "string"
+    runtime = next(
+        step
+        for step in kp["steps"]
+        if "ppu_runtime_container.sh" in step.get("run", "")
+    )
+    assert runtime["env"]["PPU_CI_WHEEL_SOURCE_SHA"] == "${{ inputs.wheel_source_sha }}"
+    text = KERNEL_PERF_WORKFLOW.read_text()
+    assert 'ppu_runtime_container.sh" kernel-perf' in text
+    assert "ppu-scheduler-action" not in text
+
+
+def test_runtime_container_kernel_perf_mode() -> None:
+    text = RUNTIME.read_text()
+    assert "kernel-perf)" in text
+    assert "/source/scripts/ci/perf_regression.sh" in text
+    # kernel-perf mode injects SUITE and does not require MODEL_PATH/HF_HOME
+    lines = text.split("\n")
+    in_kernel_block = False
+    kernel_block = []
+    for line in lines:
+        if line.strip() == "kernel-perf)":
+            in_kernel_block = True
+        elif in_kernel_block and line.strip() == ";;":
+            break
+        elif in_kernel_block:
+            kernel_block.append(line)
+    kernel_text = "\n".join(kernel_block)
+    assert "SUITE" in kernel_text
+    assert "TEST_PATH=tests/e2e/perf/test_kernel_perf.py" in kernel_text
+    assert "RESULTS_DIR=/artifacts" in kernel_text
+    assert "BASELINE_ROOT=/source/tests/e2e/perf/baselines" in kernel_text
+    assert "BASELINE_OUTPUT_ROOT=/artifacts/baselines" in kernel_text
+    assert "perf_regression.sh" in kernel_text
+    assert "MODEL_PATH" not in kernel_text
+    assert "HF_HOME" not in kernel_text
+    assert "GSM8K_DATASET_PATH" not in kernel_text
