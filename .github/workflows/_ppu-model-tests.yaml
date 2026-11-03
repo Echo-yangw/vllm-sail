@@ -135,12 +135,14 @@ jobs:
           PPU_CI_SOURCE_SHA: ${{ inputs.pr_head_sha || github.sha }}
           PPU_CI_WHEELS_DIR: ${{ steps.runtime.outputs.wheels }}
           PPU_CI_ARTIFACT_DIR: ${{ steps.runtime.outputs.artifacts }}
-          PPU_CI_DEVICE_COUNT: ${{ matrix.model.tp }}
+          PPU_CI_DEVICE_COUNT: ${{ matrix.model.ppu_count }}
           PPU_CI_REQUIRE_PR_ARTIFACT: ${{ inputs.pr_mode }}
           PPU_CI_WHEEL_SOURCE_SHA: ${{ inputs.wheel_source_sha || inputs.pr_head_sha || github.sha }}
           MODEL_ID: ${{ matrix.model.model_id }}
           SERVED_NAME: ${{ matrix.model.served_name }}
-          TP_SIZE: ${{ matrix.model.tp }}
+          # Smoke cases keep their parallelism inside one process, so tensor
+          # parallel spans every card the job asks for.
+          TP_SIZE: ${{ matrix.model.ppu_count }}
           EXTRA_SERVE_FLAGS: ${{ matrix.model.extra_serve_flags }}
         run: bash "${PPU_CI_SOURCE_DIR}/scripts/ci/ppu_runtime_container.sh" model-test
 

@@ -4,7 +4,7 @@
     "category": "smoke",
     "served_name": "qwen3.8-27b",
     "board": "OAM-810E",
-    "tp": 2,
+    "ppu_count": 2,
     "extra_serve_flags": "--trust-remote-code",
     "model_id": "Qwen/Qwen3.8-27B"
   },
@@ -13,7 +13,7 @@
     "category": "smoke",
     "served_name": "qwen3.8-27b",
     "board": "ZW-M890P",
-    "tp": 2,
+    "ppu_count": 2,
     "extra_serve_flags": "--trust-remote-code",
     "model_id": "Qwen/Qwen3.8-27B"
   },
@@ -23,7 +23,7 @@
     "model_id": "Qwen/Qwen3.8-Flash-Next",
     "served_name": "Qwen3.8-Flash-Next",
     "board": "ZW-M890P",
-    "tp": 8,
+    "ppu_count": 8,
     "extra_serve_flags": "--trust-remote-code"
   },
   {
@@ -32,7 +32,7 @@
     "model_id": "T-HEAD/DeepSeek-V4-Flash-0731-Quant-W-INT8-PerChannel-A-INT8-PerToken",
     "served_name": "deepseek-v4-int8",
     "board": "OAM-810E",
-    "tp": 8,
+    "ppu_count": 8,
     "extra_serve_flags": "--trust-remote-code"
   },
   {
@@ -41,7 +41,7 @@
     "model_id": "T-HEAD/DeepSeek-V4-Flash-0731-MoE-Quant-W-MXFP4-A-MXFP4-Dense-Quant-W-FP8-PerChannel-A-FP8-PerToken",
     "served_name": "deepseek-v4-mxfp4",
     "board": "ZW-M890P",
-    "tp": 8,
+    "ppu_count": 8,
     "extra_serve_flags": "--trust-remote-code"
   },
   {
@@ -50,7 +50,7 @@
     "model_id": "T-HEAD/MiniMax-M3-Quant-W-FP8-PerChannel-A-FP8-PerToken",
     "served_name": "MiniMax-M3-Quant-W-FP8-PerChannel-A-FP8-PerToken",
     "board": "ZW-M890P",
-    "tp": 8,
+    "ppu_count": 8,
     "extra_serve_flags": "--trust-remote-code"
   }
 ]

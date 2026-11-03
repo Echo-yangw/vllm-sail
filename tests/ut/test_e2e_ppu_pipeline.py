@@ -43,7 +43,7 @@ def _workflow(path: Path) -> dict:
 def test_models_catalog_is_partitioned_by_category_and_contract() -> None:
     catalog = _catalog()
     assert isinstance(catalog, list) and len(catalog) == 6
-    common = {"key", "served_name", "board", "tp"}
+    common = {"key", "served_name", "board", "ppu_count"}
     for entry in catalog:
         assert common <= set(entry), entry
         category = entry.get("category", "smoke")
@@ -84,7 +84,7 @@ def test_qwen_smoke_catalog_targets_both_boards(key: str, board: str) -> None:
     assert qwen["board"] == board
     selected = _load_select().build_matrix(_catalog(), key)["include"][0]
     assert selected["checkpoint"] == selected["model_id"]
-    assert int(qwen["tp"]) == 2
+    assert int(qwen["ppu_count"]) == 2
     assert qwen["served_name"] == "qwen3.8-27b"
     assert qwen["extra_serve_flags"] == "--trust-remote-code"
 
@@ -96,7 +96,7 @@ def test_accuracy_catalog_keeps_model_ids_and_per_model_tp() -> None:
     assert accuracy["qwen3.8-flash-next"]["model_id"] == ("Qwen/Qwen3.8-Flash-Next")
     assert accuracy["deepseek-v4-int8"]["board"] == "OAM-810E"
     assert accuracy["deepseek-v4-mxfp4"]["board"] == "ZW-M890P"
-    assert {int(entry["tp"]) for entry in accuracy.values()} == {8}
+    assert {int(entry["ppu_count"]) for entry in accuracy.values()} == {8}
 
 
 # --- matrix selector ---------------------------------------------------------
@@ -117,6 +117,17 @@ def test_selector_filters_smoke_without_leaking_accuracy() -> None:
     select = _load_select()
     matrix = select.build_matrix(_catalog(), "qwen3.8-flash-next,qwen3.8-27b-m890p")
     assert [entry["key"] for entry in matrix["include"]] == ["qwen3.8-27b-m890p"]
+
+
+def test_smoke_matrix_answers_the_default_branch_card_count_name() -> None:
+    """A PR run reads its workflow files from the default branch and its
+    catalog from the PR head.  The default branch already renamed the card
+    count to `ppu_count`, so a release-branch catalog still calling it `tp`
+    resolves to an empty device count and the smoke lane dies before the
+    runtime container starts.  The matrix has to answer both names."""
+    matrix = _load_select().build_matrix(_catalog(), "")
+    for entry in matrix["include"]:
+        assert entry["tp"] == entry["ppu_count"]
 
 
 def test_accuracy_matrix_uses_only_accuracy_and_eval_keys() -> None:
