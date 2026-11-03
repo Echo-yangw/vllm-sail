@@ -4,7 +4,9 @@
 import argparse
 import json
 import signal
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 
 
 def main() -> None:
@@ -15,22 +17,53 @@ def main() -> None:
     args = parser.parse_args()
 
     class Handler(BaseHTTPRequestHandler):
-        def reply(self, value):
+        def trickle(self, data):
+            Path("slow-response-started.txt").write_text(str(time.monotonic()))
+            try:
+                for byte in data:
+                    self.wfile.write(bytes([byte]))
+                    self.wfile.flush()
+                    time.sleep(0.02)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+        def reply(self, value, *, slow=False, slow_headers=False):
             data = json.dumps(value).encode()
+            if slow_headers:
+                headers = (
+                    b"HTTP/1.0 200 OK\r\nX-Trickle: "
+                    + b"x" * 160
+                    + b"\r\nContent-Type: application/json\r\nContent-Length: "
+                    + str(len(data)).encode()
+                    + b"\r\n\r\n"
+                )
+                self.trickle(headers)
+                try:
+                    self.wfile.write(data)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                return
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
-            self.wfile.write(data)
+            if slow:
+                self.trickle(data)
+            else:
+                self.wfile.write(data)
 
         def do_GET(self):
             if self.path == "/v1/models":
                 name = "unrelated-service" if args.mode == "stale" else args.model
-                self.reply({"data": [{"id": name}]})
+                self.reply({"data": [{"id": name}]}, slow=args.mode == "slow-readiness")
             elif self.path == "/metrics":
                 self.send_response(200)
                 self.end_headers()
-                self.wfile.write(b"vllm:generation_tokens_total 2\n")
+                metrics = b"vllm:generation_tokens_total 2\n"
+                if args.mode == "slow-metrics":
+                    self.trickle(metrics)
+                else:
+                    self.wfile.write(metrics)
             else:
                 self.send_error(404)
 
@@ -79,7 +112,11 @@ def main() -> None:
                             }
                         ],
                     }
-                    self.wfile.write(b"data: " + json.dumps(event).encode() + b"\n\n")
+                    line = b"data: " + json.dumps(event).encode() + b"\n\n"
+                    if args.mode == "slow-partial-line":
+                        self.trickle(line)
+                    else:
+                        self.wfile.write(line)
                 if args.mode != "missing-done":
                     self.wfile.write(b"data: [DONE]\n\n")
             else:
@@ -89,7 +126,9 @@ def main() -> None:
                         "choices": [
                             {"message": {"content": content}, "finish_reason": finish}
                         ],
-                    }
+                    },
+                    slow=args.mode == "slow-json",
+                    slow_headers=args.mode == "slow-headers",
                 )
             if args.mode == "log-error":
                 print("ERROR injected serving failure", flush=True)
