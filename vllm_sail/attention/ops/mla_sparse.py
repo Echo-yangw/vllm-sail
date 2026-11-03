@@ -22,6 +22,10 @@ if current_platform.is_cuda_alike():
     from vllm import _custom_ops as ops
 
 if current_platform.is_ppu():
+    # PPU-private ops live in torch.ops._ppu_C, which only exists once
+    # vllm_sail._C has been imported. The wrapper below performs that import;
+    # reaching into torch.ops._ppu_C directly would race the lazy load.
+    from vllm_sail import _custom_ops as sail_ops
     from vllm_sail.utils.deep_gemm import (
         fp8_fp4_mqa_logits,
         fp8_fp4_paged_mqa_logits,
@@ -352,7 +356,7 @@ def ppu_sparse_attn_indexer(
             ]
 
             if logits.dtype == torch.bfloat16:
-                torch.ops._ppu_C.top_k_per_row_prefill_bf16(
+                sail_ops.top_k_per_row_prefill_bf16(
                     logits,
                     chunk.cu_seqlen_ks,
                     chunk.cu_seqlen_ke,
