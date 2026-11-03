@@ -11,7 +11,7 @@
 schema = 1
 vllm_version_range = ">=0.31.0,<0.32.0"
 key_interface_count = 10
-target_count = 274
+target_count = 275
 
 [[key_interface]]
 symbol = "vllm.platforms.interface.PlatformEnum"
@@ -1768,6 +1768,14 @@ module = "vllm/models/qwen4_exp/common/ngram_embedding.py"
 symbol = "Qwen4ExpPLEEmbeddingMethod.from_quant_config"
 present = true
 fingerprint = "sha256:577ce4b407f95c19a4fa3d4b3ad1ccba893bf36b037a277a24de9bc70beea69d"
+
+[[patch_target]]
+name = "vllm.models.qwen4_exp.nvidia.ops.qsa._select_config"
+kind = "module"
+module = "vllm/models/qwen4_exp/nvidia/ops/qsa.py"
+symbol = "_select_config"
+present = true
+fingerprint = "sha256:baebcd4abf1ad98d074d554725d36d00a7a89e1a9b30e44284c63e1b6f52f7b5"
 
 [[patch_target]]
 name = "vllm.platforms.interface.Platform.is_ppu"

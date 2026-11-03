@@ -211,6 +211,7 @@
   "vllm.models.kimi_k3.nvidia.latent_moe_runner.LatentMoERunner._select_tail_tier": "a1e3f86b22ba9bb6b1cf34c95664590cff4b5cb3d5589a8e864128ba8cd20537",
   "vllm.models.kimi_k3.nvidia.model.KimiRoutedOutputTransform.forward": "a5af0951b7b1be82c67256499536b0ae2601128402958d8c5d684b14edf07c90",
   "vllm.models.qwen4_exp.common.ngram_embedding.Qwen4ExpPLEEmbeddingMethod.from_quant_config": "4854681149afb2680f232723c9c300219a4d0814b6cddc438cbc11e313cb82e2",
+  "vllm.models.qwen4_exp.nvidia.ops.qsa._select_config": "043369ffe6f5e0705e6432346b93ec91de72fb5f34fe98364eff0e31bcb9a8c9",
   "vllm.platforms.interface.Platform.is_ppu": "additive",
   "vllm.platforms.interface.Platform.is_sleep_mode_available": "bd559732376e83511388bc11a83310813a26be1d40b28c13f11ddd0e12d98085",
   "vllm.third_party.flash_linear_attention.ops.chunk_delta_h.chunk_gated_delta_rule_fwd_kernel_h_blockdim64": "additive",
