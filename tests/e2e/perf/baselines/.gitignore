@@ -1,0 +1,13 @@
+# Machine-written perf baselines.
+#
+# README.md here and .github/workflows/perf-regression.yaml both state that no
+# `*.json` is committed and that a baseline is "never auto-committed": the first
+# run on a chip writes `status="pending"` numbers that only become a baseline
+# after a human reviews the uploaded artifact and flips them to `"confirmed"`.
+# Without this file that first run leaves the working tree dirty, so a green
+# nightly would still show up as uncommitted changes -- and `git add -A` would
+# silently promote an unreviewed pending baseline into the repo.
+#
+# Promotion is therefore an explicit `git add -f <chip>/<suite>.json`, which is
+# exactly the human act the flow asks for.
+*.json

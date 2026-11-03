@@ -1,0 +1,54 @@
+name: Kernel Perf Gate
+run-name: >-
+  Kernel Perf PR #${{ github.event.pull_request.number }}
+  @ ${{ github.event.pull_request.head.sha }}
+
+# Triggered independently by the `kernel-perf` label on a PR.
+# This is NOT part of the /ci run gate; it produces its own check.
+#
+# Fires on:
+#   - labeled: only when the added label is `kernel-perf`
+#   - synchronize / reopened: only when the PR already carries `kernel-perf`
+# Draft PRs are always skipped.
+#
+# The workflow builds fresh wheels for the PR head SHA via _ppu-build.yaml,
+# then runs the kernel perf regression via _ppu-kernel-perf.yaml.  It never
+# falls back to an older build — if the build fails, the workflow fails.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [labeled, synchronize, reopened]
+
+permissions:
+  contents: read
+  actions: read
+cache-mode: none
+
+jobs:
+  build:
+    name: PPU wheel build (kernel-perf)
+    if: >-
+      ${{ !github.event.pull_request.draft &&
+      contains(github.event.pull_request.labels.*.name, 'kernel-perf') &&
+      (github.event.action != 'labeled' ||
+      github.event.label.name == 'kernel-perf') }}
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/_ppu-build.yaml
+    with:
+      pr_head_sha: ${{ github.event.pull_request.head.sha }}
+
+  kernel-perf:
+    name: Kernel Perf (label)
+    needs: build
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/_ppu-kernel-perf.yaml
+    with:
+      pr_mode: true
+      pr_head_sha: ${{ github.event.pull_request.head.sha }}
+      build_run_id: ${{ github.run_id }}
+      wheel_source_sha: ${{ github.event.pull_request.head.sha }}

@@ -8,11 +8,15 @@ on:
         description: Run ID whose ppu-wheels-<run_id> artifact holds the wheels under test
         required: true
         type: string
+      wheel_source_sha:
+        description: Exact SAIL commit recorded in the selected wheel manifest
+        required: true
+        type: string
       target:
         description: Stages to rerun against the existing build
         required: true
         type: choice
-        options: [both, pin-ut, model-tests, accuracy-tests]
+        options: [both, pin-ut, model-tests, accuracy-tests, kernel-perf]
         default: both
       models:
         description: Comma-separated smoke model catalog keys
@@ -41,6 +45,7 @@ jobs:
     with:
       pr_mode: false
       build_run_id: ${{ inputs.build_run_id }}
+      wheel_source_sha: ${{ inputs.wheel_source_sha }}
 
   model-tests:
     name: PPU model tests
@@ -52,6 +57,7 @@ jobs:
     with:
       pr_mode: false
       build_run_id: ${{ inputs.build_run_id }}
+      wheel_source_sha: ${{ inputs.wheel_source_sha }}
       models: ${{ inputs.models }}
 
   accuracy-tests:
@@ -64,4 +70,17 @@ jobs:
     with:
       pr_mode: false
       build_run_id: ${{ inputs.build_run_id }}
+      wheel_source_sha: ${{ inputs.wheel_source_sha }}
       models: ${{ inputs.accuracy_models }}
+
+  kernel-perf:
+    name: PPU kernel perf
+    if: inputs.target == 'both' || inputs.target == 'kernel-perf'
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/_ppu-kernel-perf.yaml
+    with:
+      pr_mode: false
+      build_run_id: ${{ inputs.build_run_id }}
+      wheel_source_sha: ${{ inputs.wheel_source_sha }}
