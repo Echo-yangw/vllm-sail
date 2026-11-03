@@ -1,0 +1,26 @@
+{
+  "description": "GLM-5 (non-FP8) recipe from QLean 0.2.0",
+  "model_patterns": [
+    "*GLM-5",
+    "*/GLM-5",
+    "*GLM-5-Chat*",
+    "*GLM-5-Instruct*"
+  ],
+  "ignored_layers": [
+    "re:.*lm_head",
+    "re:.*embed_tokens",
+    "re:.*mlp.gate$",
+    "re:.*self_attn.indexer.weights_proj$",
+    "re:.*eh_proj$"
+  ],
+  "mix_layers": [],
+  "schema_version": 1,
+  "quantization": "w8a8_dynamic_token_symmetric_channel",
+  "id": "glm_5",
+  "model_constraints": {
+    "model_types": [
+      "glm_moe_dsa"
+    ],
+    "text_config": {}
+  }
+}
