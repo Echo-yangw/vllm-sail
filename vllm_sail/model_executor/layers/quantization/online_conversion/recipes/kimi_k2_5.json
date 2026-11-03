@@ -1,0 +1,27 @@
+{
+  "description": "Kimi-K2.5 recipe from QLean 0.2.0",
+  "model_patterns": [
+    "*Kimi-K2.5*",
+    "*/Kimi-K2.5*",
+    "*Kimi_K2_5*"
+  ],
+  "ignored_layers": [
+    "re:.*lm_head",
+    "re:.*embed_tokens",
+    "re:.*mlp.shared_experts.*",
+    "re:vision.*",
+    "re:mm_projector.*",
+    "re:.*self_attn.*",
+    "re:.*mlp.gate$"
+  ],
+  "mix_layers": [],
+  "schema_version": 1,
+  "quantization": "w8a8_dynamic_token_symmetric_channel",
+  "id": "kimi_k2_5",
+  "model_constraints": {
+    "model_types": [
+      "kimi_k25"
+    ],
+    "text_config": {}
+  }
+}

@@ -184,16 +184,14 @@ def _extract_data_from_fused_moe_module(
         w13_s = None
         w2_s = None
     elif w13.dtype in [torch.int8, torch.uint8, torch.float8_e4m3fn, torch.int32]:
-        w13_s = (
-            m.w13_weight_scale_inv
-            if hasattr(m, "w13_weight_scale_inv")
-            else m.w13_weight_scale
-        )
-        w2_s = (
-            m.w2_weight_scale_inv
-            if hasattr(m, "w2_weight_scale_inv")
-            else m.w2_weight_scale
-        )
+        # Online conversion releases source FP8 scales but leaves their
+        # attributes present as None; use the converted INT8 scales then.
+        w13_s = getattr(m, "w13_weight_scale_inv", None)
+        if w13_s is None:
+            w13_s = getattr(m, "w13_weight_scale", None)
+        w2_s = getattr(m, "w2_weight_scale_inv", None)
+        if w2_s is None:
+            w2_s = getattr(m, "w2_weight_scale", None)
 
         assert isinstance(w13, torch.Tensor)
         assert isinstance(w13_s, torch.Tensor)
@@ -500,6 +498,23 @@ def _fused_moe_grouped_gemm_may_use_deep_gemm_int8(module: torch.nn.Module) -> b
         return False
 
     if not isinstance(module, MoERunner):
+        return False
+
+    experts = module.routed_experts
+    # Warm up only tensors that can actually enter the INT8 kernel; the method
+    # configuration alone does not guarantee that conversion has finished.
+    if (
+        experts.w13_weight.dtype != torch.int8
+        or experts.w2_weight.dtype != torch.int8
+        or not any(
+            isinstance(getattr(experts, name, None), torch.Tensor)
+            for name in ("w13_weight_scale_inv", "w13_weight_scale")
+        )
+        or not any(
+            isinstance(getattr(experts, name, None), torch.Tensor)
+            for name in ("w2_weight_scale_inv", "w2_weight_scale")
+        )
+    ):
         return False
 
     quant_method = module._quant_method

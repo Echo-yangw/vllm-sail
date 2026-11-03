@@ -62,6 +62,7 @@ vllm_sail = [
     "native/data/*.toml",
     "model_executor/layers/fused_moe/configs/*.json",
     "model_executor/layers/quantization/utils/configs/*.json",
+    "model_executor/layers/quantization/online_conversion/recipes/*.json",
     "utils/deepgemm_configs/*.json",
 ]
 
