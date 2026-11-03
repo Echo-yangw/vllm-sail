@@ -1006,6 +1006,11 @@ def apply(
         torch.int8,
     ]
 
+    # Empty EP batches have no expert rows. Avoid zero-grid SDK launches,
+    # which can leave an error for the next checked device operation.
+    if hidden_states.size(0) == 0:
+        return
+
     # We declared expects_unquantized_inputs (LoRA + DP/EP all2all), so the
     # prepare step deferred activation quantization to this kernel:
     # `hidden_states` arrives unquantized. Keep the unquantized tensor for
@@ -1063,6 +1068,13 @@ def apply(
         workspace13, (num_tokens * top_k_num, cache2_dim)
     )
     intermediate_cache3 = _resize_cache(workspace2, (num_tokens, top_k_num, K))
+
+    hooked = self._uses_post_gemm2_hook(num_tokens)
+    if hooked and (apply_router_weight_on_input or self._lora_context is not None):
+        raise NotImplementedError(
+            "post_gemm2_hook needs unweighted GEMM2 rows; it supports neither "
+            "router weights on the input nor LoRA."
+        )
 
     # Under EP, drop the top-k slots routed to remote experts at alignment
     # time instead of launching `off_experts == -1` GEMM blocks that only
@@ -1273,7 +1285,8 @@ def apply(
             sorted_token_ids,
             expert_ids,
             num_tokens_post_padded,
-            self._apply_router_weight_in_gemm2(apply_router_weight_on_input),
+            not hooked
+            and self._apply_router_weight_in_gemm2(apply_router_weight_on_input),
             1,
             # PPU MODIFICATION: begin
             config.get("DOWN", config),
@@ -1338,8 +1351,17 @@ def apply(
                 top_k_num=top_k_num,
             )
 
-    # separate function is required for MoE + LoRA
-    self._finalize_expert_output(intermediate_cache3, output, topk_ids, expert_map)
+    if hooked:
+        self._run_post_gemm2_hook(
+            route_major_moe_output(
+                intermediate_cache3, topk_weights, topk_ids, expert_map
+            ),
+            output,
+        )
+    else:
+        self._finalize_expert_output(
+            intermediate_cache3, output, topk_ids, expert_map
+        )
 
 
 _install(_experts, "apply", apply, target_name="TritonExperts.apply")
