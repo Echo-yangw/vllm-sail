@@ -7,7 +7,6 @@ from __future__ import annotations
 import functools
 import sys
 
-from vllm.models.muse_spark.common.ops import fused_routing as _provider
 from vllm.platforms import current_platform
 
 from vllm_sail.patch.bodies import bind_body
@@ -19,7 +18,30 @@ _META = dict(
     affected_versions='>=0.32.0,<0.33.0',
     remove_when='MuseSpark selects the native router through a platform implementation capability or PPU implements and verifies this native operator.',
 )
-_original = _provider.fused_musespark1x_routing
+
+# Import the provider first so the original callable can be captured. Importing it
+# also executes ``vllm.models.muse_spark``, which reaches
+# ``vllm.compilation.passes.fusion.matcher_utils`` and reads ``torch.ops._C`` at
+# module scope. A ``VLLM_TARGET_DEVICE=empty`` vLLM claims that namespace only once
+# the PPU kernels are registered, so the import raises ``AttributeError`` before a
+# single patch lands. Skipping is correct there: without the compiled extension the
+# native router this patch guards against cannot dispatch either.
+try:
+    from vllm.models.muse_spark.common.ops import fused_routing as _provider
+
+    _original = _provider.fused_musespark1x_routing
+except (ImportError, AttributeError) as exc:  # no compiled kernels / older vLLM
+    _provider = None
+    _unavailable = True
+    from vllm.logger import init_logger
+
+    init_logger(__name__).warning(
+        "Skipping the MuseSpark routing patch: the upstream module cannot be "
+        "imported (%s). It needs a vLLM built with its compiled kernels.",
+        exc,
+    )
+else:
+    _unavailable = False
 
 
 def _routing_body(
@@ -108,24 +130,31 @@ def _routing_body(
     return weights_view, ids_view
 
 
-# The upstream function chooses its native path mid-body. Keep its allocation,
-# validation and Triton call unchanged; only PPU dispatch reaches this body.
-_ppu_routing = bind_body(_routing_body, _provider)
+# Registration is explicit so an environment without the compiled kernels imports
+# this module, warns once and skips it instead of aborting the whole install.
+if not _unavailable:
+    # The upstream function chooses its native path mid-body. Keep its allocation,
+    # validation and Triton call unchanged; only PPU dispatch reaches this body.
+    _ppu_routing = bind_body(_routing_body, _provider)
 
+    @patch(_MODULE, 'fused_musespark1x_routing', **_META)
+    @functools.wraps(_original)
+    def fused_musespark1x_routing(*args, **kwargs):
+        if current_platform.is_ppu():
+            return _ppu_routing(*args, **kwargs)
+        return _original(*args, **kwargs)
 
-@patch(_MODULE, 'fused_musespark1x_routing', **_META)
-@functools.wraps(_original)
-def fused_musespark1x_routing(*args, **kwargs):
-    if current_platform.is_ppu():
-        return _ppu_routing(*args, **kwargs)
-    return _original(*args, **kwargs)
-
-
-_CONSUMERS = (
-    'vllm.models.muse_spark.common.moe',
-    'vllm.models.muse_spark.nvidia.model',
-)
-for _name in _CONSUMERS:
-    _consumer = sys.modules.get(_name)
-    if _consumer is not None and getattr(_consumer, 'fused_musespark1x_routing', None) is _original:
-        patch(_name, 'fused_musespark1x_routing', **_META)(fused_musespark1x_routing)
+    # A consumer imported before this module keeps the unpatched router in its
+    # namespace, so rebind the aliases that still point at the original.
+    for _name in (
+        'vllm.models.muse_spark.common.moe',
+        'vllm.models.muse_spark.nvidia.model',
+    ):
+        _consumer = sys.modules.get(_name)
+        if (
+            _consumer is not None
+            and getattr(_consumer, 'fused_musespark1x_routing', None) is _original
+        ):
+            patch(_name, 'fused_musespark1x_routing', **_META)(
+                fused_musespark1x_routing
+            )
