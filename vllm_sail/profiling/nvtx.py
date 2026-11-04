@@ -118,10 +118,20 @@ def range_pop() -> None:
         pass
 
 
-def prof_iter(iteration: int) -> None:
-    """Per-iteration hook for the PPU SDK profiler; no-op without model_prof."""
+def prof_iter(iteration: int) -> bool:
+    """Per-iteration hook for the PPU SDK profiler; no-op without model_prof.
+
+    ``model_prof.prof_iter`` opens ``[prof_range]: iter N`` itself and pops it
+    on the *next* call, so a caller that gets ``True`` back already owns an
+    iteration range and must not open a second one. Opening one anyway nests
+    two identically named ranges per iteration, which makes every iteration
+    count twice in a range summary and mislabels the outer range's end.
+
+    Returns True when the SDK took ownership of the range.
+    """
     if _model_prof_iter is not None:
-        _model_prof_iter(iteration)
+        return bool(_model_prof_iter(iteration))
+    return False
 
 
 def sche_mark(sche_output: Any) -> None:

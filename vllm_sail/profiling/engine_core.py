@@ -16,6 +16,19 @@ inside the ``schedule`` NVTX range anyway) and empty steps get a range too.
 The fork's ``sche_mark`` call is covered by the scheduler patch module,
 which marks every scheduler output in this process exactly once.
 
+The engine core and each model runner emit ``[prof_range]: iter N`` for the
+same ``N``. Two rules keep them in step:
+
+* one iteration per *batch the engine actually dispatched*, so no process
+  consumes a number on a step or call that never executed a batch: the engine
+  skips its ``not scheduler.has_requests()`` steps (and the batch-queue pops that
+  dispatch nothing), and the model runners skip warmup dummy runs;
+* ``model_prof.prof_iter`` already opens that exact range and pops it on the
+  next call, so a wrapper only falls back to its own push/pop when the SDK
+  declines (no ``model_prof``, or no ``MODEL_PROFILE``). Pushing anyway nests
+  two identically named ranges per iteration, which doubles every iteration in
+  a range summary and makes the outer range end at the wrong place.
+
 Installed only by ``vllm_sail.profiling.install()`` when
 ``VLLM_SAIL_NVTX_PROFILE`` is set; never imported otherwise.
 """
@@ -58,11 +71,11 @@ def engine_core_init(self, *args, **kwargs):
     "vllm.v1.engine.core",
     "EngineCore.step",
     reason=(
-        "[profiling, opt-in] Wraps one engine step in the fork's "
-        "`[prof_range]: iter N` range and prof_iter hook. The fork opened "
-        "the range after scheduler.schedule(); the wrapper spans the whole "
-        "method, so the range additionally covers scheduling and empty "
-        "steps (see module docstring)."
+        "[profiling, opt-in] Wraps one dispatched engine step in the fork's "
+        "`[prof_range]: iter N` range and prof_iter hook. The fork opened the "
+        "range after scheduler.schedule(); the wrapper spans the whole method, "
+        "but only for steps that dispatch a batch, so this counter keeps "
+        "tracking the model runners' (see module docstring)."
     ),
     affected_versions=_AFFECTED,
     remove_when=(
@@ -72,14 +85,23 @@ def engine_core_init(self, *args, **kwargs):
     ),
 )
 def step(self):
+    # Upstream returns ``({}, False)`` here without touching the model, so the
+    # workers never see this step. Counting it would advance this process's
+    # iteration (and the SDK's profile window) ahead of every worker's.
+    scheduler = getattr(self, "scheduler", None)
+    if scheduler is not None and not scheduler.has_requests():
+        return _upstream_step(self)
+
     iteration = getattr(self, "iteration", 0)
-    nvtx.prof_iter(iteration)
-    nvtx.range_push(f"[prof_range]: iter {iteration}")
+    owns_range = nvtx.prof_iter(iteration)
+    if not owns_range:
+        nvtx.range_push(f"[prof_range]: iter {iteration}")
     self.iteration = iteration + 1
     try:
         return _upstream_step(self)
     finally:
-        nvtx.range_pop()
+        if not owns_range:
+            nvtx.range_pop()
 
 
 @patch(
@@ -87,9 +109,10 @@ def step(self):
     "EngineCore.step_with_batch_queue",
     reason=(
         "[profiling, opt-in] Same `[prof_range]: iter N` wrapping as "
-        "EngineCore.step but for the async batch-queue loop. The fork popped "
-        "right after execute_model; the wrapper spans the whole method (see "
-        "module docstring)."
+        "EngineCore.step but for the async batch-queue loop, and only for the "
+        "calls that dispatch a new batch (draining the queue executes nothing). "
+        "The fork popped right after execute_model; the wrapper spans the whole "
+        "method (see module docstring)."
     ),
     affected_versions=_AFFECTED,
     remove_when=(
@@ -99,11 +122,20 @@ def step(self):
     ),
 )
 def step_with_batch_queue(self):
+    # Same guard as ``step``: only the branch that schedules and dispatches a new
+    # batch is an iteration. When the queue is merely drained (or still empty)
+    # the workers execute nothing new, so the counter must not move.
+    scheduler = getattr(self, "scheduler", None)
+    if scheduler is not None and not scheduler.has_requests():
+        return _upstream_step_with_batch_queue(self)
+
     iteration = getattr(self, "iteration", 0)
-    nvtx.prof_iter(iteration)
-    nvtx.range_push(f"[prof_range]: iter {iteration}")
+    owns_range = nvtx.prof_iter(iteration)
+    if not owns_range:
+        nvtx.range_push(f"[prof_range]: iter {iteration}")
     self.iteration = iteration + 1
     try:
         return _upstream_step_with_batch_queue(self)
     finally:
-        nvtx.range_pop()
+        if not owns_range:
+            nvtx.range_pop()

@@ -39,7 +39,6 @@ PROFILING_TARGETS = (
     "vllm.v1.engine.core.EngineCore.__init__",
     "vllm.v1.engine.core.EngineCore.step",
     "vllm.v1.engine.core.EngineCore.step_with_batch_queue",
-    "vllm.v1.worker.gpu_model_runner.GPUModelRunner.__init__",
     "vllm.v1.worker.gpu_model_runner.GPUModelRunner._prepare_inputs",
     "vllm.v1.worker.gpu_model_runner.GPUModelRunner._sample",
     "vllm.v1.worker.gpu_model_runner.GPUModelRunner._model_forward",
@@ -140,6 +139,11 @@ def fake_vllm(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
             return ("execute_model", scheduler_output, dummy_run)
 
     class EngineCore:
+        # The profiling wrappers ask the scheduler whether this step dispatches a
+        # batch (``EngineCore.scheduler.has_requests()``). The fake always does;
+        # tests override the attribute to model an idle step.
+        scheduler = SimpleNamespace(has_requests=lambda: True)
+
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             self.init_args = (args, kwargs)
 
@@ -182,7 +186,6 @@ def fake_vllm(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         EngineCore=EngineCore,
         Scheduler=Scheduler,
         originals={
-            "GPUModelRunner.__init__": GPUModelRunner.__init__,
             "GPUModelRunner._prepare_inputs": GPUModelRunner._prepare_inputs,
             "GPUModelRunner._sample": GPUModelRunner._sample,
             "GPUModelRunner._model_forward": GPUModelRunner._model_forward,
@@ -305,7 +308,6 @@ def test_gate_on_installs_every_patch(installed) -> None:
 
     fakes = installed.fakes
     replacements = {
-        "GPUModelRunner.__init__": fakes.GPUModelRunner.__init__,
         "GPUModelRunner._prepare_inputs": fakes.GPUModelRunner._prepare_inputs,
         "GPUModelRunner._sample": fakes.GPUModelRunner._sample,
         "GPUModelRunner._model_forward": fakes.GPUModelRunner._model_forward,
@@ -416,22 +418,33 @@ def test_drifted_target_degrades_to_warning(
 
 @pytest.fixture
 def recording_nvtx(installed, monkeypatch: pytest.MonkeyPatch):
-    """Swap the helper backends for recorders after install imported them."""
+    """Swap the helper backends for recorders after install imported them.
+
+    ``owned`` mirrors what ``model_prof.prof_iter`` reports: True means the SDK
+    already opened ``[prof_range]: iter N``, so the wrapper must not open a
+    second one.
+    """
     prof_nvtx = importlib.import_module("vllm_sail.profiling.nvtx")
     pushes: list[str] = []
     pops: list[int] = []
     iters: list[int] = []
+    recording = SimpleNamespace(pushes=pushes, pops=pops, iters=iters, owned=False)
+
+    def model_prof_iter(iteration: int) -> bool:
+        iters.append(iteration)
+        return recording.owned
+
     monkeypatch.setattr(
         prof_nvtx, "_torch_range_push", lambda label: pushes.append(label)
     )
     monkeypatch.setattr(prof_nvtx, "_torch_range_pop", lambda: pops.append(1))
-    monkeypatch.setattr(prof_nvtx, "_model_prof_iter", lambda it: iters.append(it))
-    return SimpleNamespace(pushes=pushes, pops=pops, iters=iters)
+    monkeypatch.setattr(prof_nvtx, "_model_prof_iter", model_prof_iter)
+    return recording
 
 
 def test_execute_model_wraps_iteration_range(installed, recording_nvtx) -> None:
     runner = installed.fakes.GPUModelRunner()
-    assert runner.iteration == 0
+    assert not hasattr(runner, "iteration")
 
     output = _sched_output()
     result = runner.execute_model(output)
@@ -445,6 +458,20 @@ def test_execute_model_wraps_iteration_range(installed, recording_nvtx) -> None:
 
     runner.execute_model(output)
     assert recording_nvtx.pushes[1] == "[prof_range]: iter 1"
+
+
+def test_execute_model_defers_to_model_prof(installed, recording_nvtx) -> None:
+    """`model_prof.prof_iter` opens `[prof_range]`; a second push nests it."""
+    recording_nvtx.owned = True
+    runner = installed.fakes.GPUModelRunner()
+
+    runner.execute_model(_sched_output())
+    runner.execute_model(_sched_output())
+
+    assert recording_nvtx.pushes == []
+    assert recording_nvtx.pops == []
+    assert recording_nvtx.iters == [0, 1]
+    assert runner.iteration == 2
 
 
 def test_sample_wraps_sampler_range(installed, recording_nvtx) -> None:
@@ -478,8 +505,9 @@ def test_model_forward_range_uses_stashed_scheduler_output(
     assert len(recording_nvtx.pops) == 1
 
     # execute_model clears the stash, so later forwards are uninstrumented.
+    count = len(recording_nvtx.pushes)
     runner.execute_model(_sched_output())
-    assert recording_nvtx.pushes[-1] == "[prof_range]: iter 0"
+    assert recording_nvtx.pushes[count:] == ["[prof_range]: iter 0"]
     count = len(recording_nvtx.pushes)
     runner._model_forward(input_ids=3)
     assert len(recording_nvtx.pushes) == count
@@ -496,10 +524,11 @@ def test_prepare_inputs_is_annotated(installed) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_v2_execute_model_wraps_iteration_range(installed, recording_nvtx) -> None:
+def test_v2_execute_model_wraps_iteration_and_batch_ranges(
+    installed, recording_nvtx
+) -> None:
     runner = installed.fakes.GPUModelRunnerV2()
-    # No __init__ patch: the counter is created on first use, like the engine
-    # core does it after the profiling patches load mid-construction.
+    # No __init__ patch: the counter is created on first use, like on V1.
     assert not hasattr(runner, "iteration")
 
     output = _sched_output()
@@ -531,8 +560,14 @@ def test_v2_execute_model_forwards_dummy_runs_unprofiled(
     )
     assert recording_nvtx.pushes == []
     assert recording_nvtx.iters == []
-    # Memory profiling and CUDA-graph capture must not consume iteration numbers.
     assert not hasattr(runner, "iteration")
+
+    # The first real batch still lands on iteration 0: a warmup run must not
+    # offset this process's labels (nor the SDK's profile window) from the
+    # engine's, which never counted it either.
+    runner.execute_model(output)
+    assert recording_nvtx.iters == [0]
+    assert recording_nvtx.pushes == ["[prof_range]: iter 0", "total bs=1, P bs=1"]
 
 
 def test_v2_sample_wraps_sampler_range(installed, recording_nvtx) -> None:
@@ -544,9 +579,7 @@ def test_v2_sample_wraps_sampler_range(installed, recording_nvtx) -> None:
         hidden_states,
         "batch",
     )
-    assert recording_nvtx.pushes == [
-        "[FW_NATIVE] op:sampler,hidden_states:(7, 16)"
-    ]
+    assert recording_nvtx.pushes == ["[FW_NATIVE] op:sampler,hidden_states:(7, 16)"]
     assert len(recording_nvtx.pops) == 1
 
 
@@ -578,7 +611,8 @@ def test_v2_instruments_compute_logits_once(installed, recording_nvtx) -> None:
     )
 
 
-def test_engine_core_steps_carry_iteration_ranges(installed, recording_nvtx) -> None:
+def test_engine_core_steps_fall_back_to_own_ranges(installed, recording_nvtx) -> None:
+    """Without SDK ownership the engine wrapper opens/closes the range itself."""
     core = installed.fakes.EngineCore("arg")
     assert core.iteration == 0
     assert core.init_args == (("arg",), {})
@@ -595,9 +629,44 @@ def test_engine_core_steps_carry_iteration_ranges(installed, recording_nvtx) -> 
     assert core.iteration == 2
 
 
+def test_engine_core_steps_defer_to_model_prof(installed, recording_nvtx) -> None:
+    """`model_prof.prof_iter` opens the range; a second push would nest it."""
+    recording_nvtx.owned = True
+
+    core = installed.fakes.EngineCore()
+    assert core.step() == ("step",)
+    assert core.step_with_batch_queue() == ("step_with_batch_queue",)
+
+    assert recording_nvtx.pushes == []
+    assert recording_nvtx.pops == []
+    assert recording_nvtx.iters == [0, 1]
+    assert core.iteration == 2
+
+
+@pytest.mark.parametrize("step_name", ["step", "step_with_batch_queue"])
+def test_engine_core_idle_steps_consume_no_iteration(
+    installed, recording_nvtx, step_name
+) -> None:
+    """A step that dispatches nothing must not advance the iteration counter."""
+    core = installed.fakes.EngineCore()
+    core.scheduler = SimpleNamespace(has_requests=lambda: False)
+
+    assert getattr(core, step_name)() == (step_name,)
+
+    assert recording_nvtx.iters == []
+    assert recording_nvtx.pushes == []
+    assert core.iteration == 0
+
+    core.scheduler = SimpleNamespace(has_requests=lambda: True)
+    getattr(core, step_name)()
+    assert recording_nvtx.iters == [0]
+    assert core.iteration == 1
+
+
+@pytest.mark.parametrize("owned", [False, True], ids=["sdk-declines", "sdk-owns"])
 @pytest.mark.parametrize("step_name", ["step", "step_with_batch_queue"])
 def test_engine_core_loads_profiling_during_init(
-    profiling_pkg, nvtx_stub, fake_vllm, cleared_gate, monkeypatch, step_name
+    profiling_pkg, nvtx_stub, fake_vllm, cleared_gate, monkeypatch, step_name, owned
 ) -> None:
     monkeypatch.setenv("VLLM_SAIL_NVTX_PROFILE", "1")
 
@@ -618,7 +687,7 @@ def test_engine_core_loads_profiling_during_init(
     prof_nvtx = importlib.import_module("vllm_sail.profiling.nvtx")
     events = []
     monkeypatch.setattr(
-        prof_nvtx, "_model_prof_iter", lambda i: events.append(("iter", i))
+        prof_nvtx, "_model_prof_iter", lambda i: events.append(("iter", i)) or owned
     )
     monkeypatch.setattr(
         prof_nvtx, "_torch_range_push", lambda label: events.append(("push", label))
@@ -629,14 +698,12 @@ def test_engine_core_loads_profiling_during_init(
         assert core.step_fn() == (step_name,)
         assert core.iteration == iteration + 1
 
-    assert events == [
-        ("iter", 0),
-        ("push", "[prof_range]: iter 0"),
-        ("pop",),
-        ("iter", 1),
-        ("push", "[prof_range]: iter 1"),
-        ("pop",),
-    ]
+    expected: list[tuple] = []
+    for iteration in range(2):
+        expected.append(("iter", iteration))
+        if not owned:
+            expected += [("push", f"[prof_range]: iter {iteration}"), ("pop",)]
+    assert events == expected
 
 
 def test_scheduler_schedule_is_annotated_and_update_marks(installed) -> None:
@@ -695,7 +762,8 @@ def test_helpers_import_cleanly_without_optional_deps(bare_nvtx_helpers) -> None
     bare_nvtx_helpers.mark("ignored")
     bare_nvtx_helpers.range_push("ignored")
     bare_nvtx_helpers.range_pop()
-    bare_nvtx_helpers.prof_iter(3)
+    # No SDK ownership to report, so callers must fall back to their own range.
+    assert bare_nvtx_helpers.prof_iter(3) is False
     bare_nvtx_helpers.sche_mark(_sched_output())
 
 

@@ -8,8 +8,11 @@ range is reattached at the closest enclosing method boundary so no upstream
 body is copied:
 
 * ``[prof_range]: iter N`` + ``prof_iter`` + ``sche_mark`` → wrapper around
-  ``execute_model`` (the fork opened it after the early-return checks; the
-  wrapper spans the whole method, so no-forward iterations get a range too).
+  ``execute_model``. ``model_prof.prof_iter`` opens that exact range itself,
+  so the wrapper only pushes its own when the SDK declines; it also drives
+  ``cudaProfilerStart``/``cudaProfilerStop`` in this process, so it must run
+  once per executed batch. ``N`` counts batches the engine dispatched, which
+  is why warmup must never reach this wrapper (``_dummy_run`` bypasses it).
 * ``total bs=..., P bs=...`` → wrapper around ``_model_forward``, reading
   the scheduler output that ``execute_model`` stashes on the runner.
 * ``[FW_NATIVE] op:sampler,...`` → wrapper around ``_sample``; the fork's
@@ -33,31 +36,10 @@ _AFFECTED = ">=0.32.0,<0.33.0"
 #: _model_forward wrapper can label the forward range like the fork did.
 _STASH = "_ppu_nvtx_prof_scheduler_output"
 
-_upstream_init = GPUModelRunner.__init__
 _upstream_prepare_inputs = GPUModelRunner._prepare_inputs
 _upstream_sample = GPUModelRunner._sample
 _upstream_model_forward = GPUModelRunner._model_forward
 _upstream_execute_model = GPUModelRunner.execute_model
-
-
-@patch(
-    "vllm.v1.worker.gpu_model_runner",
-    "GPUModelRunner.__init__",
-    reason=(
-        "[profiling, opt-in] Adds the self.iteration counter that labels the "
-        "worker-level NVTX iteration ranges (fork gpu_model_runner.py hunk "
-        "@@ -469). Installed only when VLLM_SAIL_NVTX_PROFILE is set."
-    ),
-    affected_versions=_AFFECTED,
-    remove_when=(
-        "the opt-in NVTX subpackage (docs/developer_guide/architecture.md) "
-        "is retired, or upstream adds native NVTX/tracing hooks to the v1 "
-        "model runner."
-    ),
-)
-def runner_init(self, *args, **kwargs):
-    _upstream_init(self, *args, **kwargs)
-    self.iteration = 0
 
 
 @patch(
@@ -137,12 +119,13 @@ def _model_forward(self, *args, **kwargs):
     "vllm.v1.worker.gpu_model_runner",
     "GPUModelRunner.execute_model",
     reason=(
-        "[profiling, opt-in] Wraps one worker iteration in the fork's "
+        "[profiling, opt-in] Wraps one executed batch in the fork's "
         "`[prof_range]: iter N` range, prof_iter hook and sche_mark (fork "
-        "gpu_model_runner.py hunks @@ -4207/@@ -4233/@@ -4779). The fork "
-        "opened the range after the no-forward early returns; the wrapper "
-        "spans the whole method, so those iterations get a range too. The "
-        "model compute_logits calls receive their own shape-aware range."
+        "gpu_model_runner.py hunks @@ -4207/@@ -4233/@@ -4779), and stashes the "
+        "scheduler output so `_model_forward` can label the forward range. "
+        "`prof_iter` already opens that exact range, so the wrapper only opens "
+        "its own when the SDK declines. The model compute_logits calls receive "
+        "their own shape-aware range."
     ),
     affected_versions=_AFFECTED,
     remove_when=(
@@ -156,12 +139,17 @@ def execute_model(self, *args, **kwargs):
     scheduler_output = args[0] if args else kwargs.get("scheduler_output")
     if scheduler_output is not None:
         nvtx.sche_mark(scheduler_output)
-    nvtx.prof_iter(self.iteration)
-    nvtx.range_push(f"[prof_range]: iter {self.iteration}")
-    self.iteration += 1
+    # One iteration per batch the engine dispatched, so this counter stays in
+    # step with ``EngineCore.step`` (which skips steps that dispatch nothing).
+    iteration = getattr(self, "iteration", 0)
+    owns_range = nvtx.prof_iter(iteration)
+    if not owns_range:
+        nvtx.range_push(f"[prof_range]: iter {iteration}")
+    self.iteration = iteration + 1
     setattr(self, _STASH, scheduler_output)
     try:
         return _upstream_execute_model(self, *args, **kwargs)
     finally:
-        nvtx.range_pop()
+        if not owns_range:
+            nvtx.range_pop()
         setattr(self, _STASH, None)

@@ -6,18 +6,17 @@ Runner V2) by default and only falls back to Model Runner V1 when the config
 needs a feature V2 does not implement. The V1 instrumentation in
 :mod:`vllm_sail.profiling.model_runner` patches
 ``vllm.v1.worker.gpu_model_runner.GPUModelRunner``, a class V2 never
-instantiates, so with V2 active the worker process emitted no ``[prof_range]``
-(and no sampler / compute-logits / prepare-inputs ranges) at all.
+instantiates, so with V2 active the worker process emitted no sampler /
+compute-logits / prepare-inputs ranges and no batch range at all.
 
 This module reattaches the same ranges to the V2 class, at whole-method
 boundaries and without copying any upstream body:
 
-* ``[prof_range]: iter N`` + ``prof_iter`` + ``sche_mark`` -> wrapper around
-  ``execute_model``, as in V1.
-* ``total bs=..., P bs=...`` -> the same wrapper. V2 inlines the forward into
-  ``execute_model`` (there is no ``_model_forward`` to wrap), so this range
-  coincides with ``[prof_range]`` instead of nesting strictly inside it. The
-  label is shared with V1 so existing PPU profiling filters keep working.
+* ``sche_mark`` + ``[prof_range]: iter N`` + ``total bs=..., P bs=...`` ->
+  wrapper around ``execute_model``, as in V1. ``model_prof.prof_iter`` opens
+  ``[prof_range]`` itself, so the wrapper only opens its own when the SDK
+  declines. V2 inlines the forward into ``execute_model`` (there is no
+  ``_model_forward`` to wrap), so the batch range spans the forward exactly.
 * ``[FW_NATIVE] op:sampler,...`` -> wrapper around ``sample``, V2's ``_sample``
   equivalent. V2 computes the logits inside ``sample`` and never exposes them,
   so the label reports the sampling input's shape; the logits shape is still
@@ -28,15 +27,18 @@ boundaries and without copying any upstream body:
   wrapper, exactly as the V1 module does.
 
 V2 also splits the step in two: ``execute_model`` runs the forward and
-``sample_tokens`` runs the sampling. Only the forward gets the iteration range;
-the sampling work stays visible through the sampler and compute-logits ranges
+``sample_tokens`` runs the sampling. The batch range covers the forward; the
+sampling work stays visible through the sampler and compute-logits ranges
 above, and the per-step ``[prof_range]`` emitted by the engine core still spans
 both.
 
 Dummy runs (memory profiling and CUDA-graph capture) call ``execute_model``
 with ``dummy_run=True``. V1's ``_dummy_run`` bypasses every instrumented method,
-so they are skipped here too: warmup must neither emit ranges nor consume
-iteration numbers.
+so they are skipped here too: warmup must neither emit ranges nor consume the
+iteration number. This is what keeps ``iter N`` identical to the engine's:
+``N`` counts batches the engine dispatched, and a warmup run was never one of
+them, so counting it would offset this process's labels (and the SDK's
+``cudaProfilerStart``/``Stop`` window) by the number of warmup runs.
 """
 
 from __future__ import annotations
@@ -102,10 +104,12 @@ def sample(self, hidden_states, *args, **kwargs):
     _UPSTREAM_MODULE,
     "GPUModelRunner.execute_model",
     reason=(
-        "[profiling, opt-in] Wraps one V2 worker iteration in the fork's "
+        "[profiling, opt-in] Wraps one executed batch in the fork's "
         "`[prof_range]: iter N` range, the `total bs=..., P bs=...` range, the "
         "prof_iter hook and sche_mark. Without it, V2 runs (the 0.31 default) "
-        "emit no worker NVTX at all. Dummy runs are forwarded untouched."
+        "emit no worker NVTX at all. `prof_iter` already opens `[prof_range]`, "
+        "so the wrapper only opens its own when the SDK declines. Dummy runs "
+        "consume no iteration number and are forwarded untouched."
     ),
     affected_versions=_AFFECTED,
     remove_when=_REMOVE_WHEN,
@@ -125,18 +129,19 @@ def execute_model(
 
     nvtx.instrument_compute_logits(getattr(self, "model", None))
     nvtx.sche_mark(scheduler_output)
-    # Lazy initialization: the runner may have been constructed while the
-    # profiling patches were still being installed (see the engine-core
-    # counterpart), so the attribute is created on first use.
+    # One iteration per batch the engine dispatched, so this counter stays in
+    # step with ``EngineCore.step`` (which skips steps that dispatch nothing).
     iteration = getattr(self, "iteration", 0)
-    nvtx.prof_iter(iteration)
-    nvtx.range_push(f"[prof_range]: iter {iteration}")
-    nvtx.range_push(nvtx.batch_label(scheduler_output))
+    owns_range = nvtx.prof_iter(iteration)
+    if not owns_range:
+        nvtx.range_push(f"[prof_range]: iter {iteration}")
     self.iteration = iteration + 1
+    nvtx.range_push(nvtx.batch_label(scheduler_output))
     try:
         return _upstream_execute_model(
             self, scheduler_output, intermediate_tensors, dummy_run, *args, **kwargs
         )
     finally:
         nvtx.range_pop()
-        nvtx.range_pop()
+        if not owns_range:
+            nvtx.range_pop()
