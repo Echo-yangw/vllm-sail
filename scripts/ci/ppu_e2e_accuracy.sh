@@ -25,6 +25,8 @@
 #   UPDATE_GOLDEN      "1" to pass --update-golden (default: "0")
 #   THRESHOLD          accuracy threshold (default: 0.9)
 #   VLLM_PORT          dynamically allocated vLLM API port (default: 9985)
+#   DG_JIT_CACHE_DIR   host-backed DeepGEMM kernel cache; without it the JIT
+#                      pass is repeated from scratch on every container
 #   GOLDEN_SEED_DIR    reviewed goldens to seed from; the checkout is read-only
 #                      (default: /source/tests/e2e/models/_golden)
 set -Eeuo pipefail
@@ -73,6 +75,7 @@ echo "RESULTS_DIR=${RESULTS_DIR}"
 echo "UPDATE_GOLDEN=${UPDATE_GOLDEN}"
 echo "THRESHOLD=${THRESHOLD}"
 echo "VLLM_PORT=${VLLM_PORT}"
+echo "DG_JIT_CACHE_DIR=${DG_JIT_CACHE_DIR:-<unset: JIT recompiles this case>}"
 echo "GOLDEN_SEED_DIR=${GOLDEN_SEED_DIR:-/source/tests/e2e/models/_golden}"
 python -c 'import sys; print("python", sys.version)'
 
