@@ -43,6 +43,8 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       image: ${{ steps.plan.outputs.image }}
+      sdk_url: ${{ steps.plan.outputs.sdk_url }}
+      pccl_url: ${{ steps.plan.outputs.pccl_url }}
       configuration: ${{ steps.plan.outputs.configuration }}
       tag: ${{ steps.plan.outputs.tag }}
     steps:
@@ -89,6 +91,10 @@ jobs:
       VLLM_SAIL_BUILD_IMAGE: ${{ needs.prepare.outputs.image }}
       RELEASE_CONFIGURATION: ${{ needs.prepare.outputs.configuration }}
       RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+      SDK_URL: ${{ needs.prepare.outputs.sdk_url }}
+      PCCL_URL: ${{ needs.prepare.outputs.pccl_url }}
+      PCCL_PATH: /usr/local/pccl
+      TORCH_VERSION: ${{ fromJSON(needs.prepare.outputs.configuration).torch_version }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -96,11 +102,50 @@ jobs:
           fetch-depth: 0
           submodules: recursive
           persist-credentials: false
+      - name: Install the matrix SAIL SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${SDK_URL:?SDK_URL must not be empty}"
+          download_dir="$(mktemp -d "$RUNNER_TEMP/ppu-sdk.XXXXXX")"
+          wget --no-verbose --https-only --tries=3 --timeout=30 \
+            -O "$download_dir/ppu-sdk.run" -- "$SDK_URL"
+          test -s "$download_dir/ppu-sdk.run"
+          bash "$download_dir/ppu-sdk.run" --prefix=/usr/local --silent
+          printf '%s\n' /usr/local/PPU_SDK/lib >> /etc/ld.so.conf.d/ppu.conf
+          ldconfig
+      - name: Install the matrix PCCL
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${PCCL_URL:?PCCL_URL must not be empty}"
+          : "${PCCL_PATH:?PCCL_PATH must not be empty}"
+          if [[ -e "$PCCL_PATH" || -L "$PCCL_PATH" ]]; then
+            printf '%s\n' '::error::PCCL installation directory already exists' >&2
+            exit 1
+          fi
+          download_dir="$(mktemp -d "$RUNNER_TEMP/pccl.XXXXXX")"
+          wget --no-verbose --https-only --tries=3 --timeout=30 \
+            -O "$download_dir/pccl.tar.gz" -- "$PCCL_URL"
+          test -s "$download_dir/pccl.tar.gz"
+          mkdir "$download_dir/extracted"
+          tar --extract --file="$download_dir/pccl.tar.gz" --directory="$download_dir/extracted"
+          test -d "$download_dir/extracted/pccl"
+          test ! -L "$download_dir/extracted/pccl"
+          mv -- "$download_dir/extracted/pccl" "$PCCL_PATH"
+          printf '%s\n' "$PCCL_PATH/lib" >> /etc/ld.so.conf.d/pccl.conf
+          ldconfig
       - name: Build both wheels through the public entry point
         shell: bash
         run: |
           set -eo pipefail
           source /usr/local/PPU_SDK/envsetup.sh
+          export PATH="$PCCL_PATH/bin:$PATH"
+          export LD_LIBRARY_PATH="$PCCL_PATH/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          : "${TORCH_VERSION:?SAIL PyTorch version must not be empty}"
+          export PIP_EXTRA_INDEX_URL=""
+          python -m pip install --no-input "torch==$TORCH_VERSION" \
+            --index-url https://download.t-head.cn/artifactory/api/pypi/pypi_index/simple
           export PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
           export PIP_EXTRA_INDEX_URL=""
           python -c 'import json, os, sys, torch; c = json.loads(os.environ["RELEASE_CONFIGURATION"]); assert f"{sys.version_info.major}{sys.version_info.minor}" == c["python_version"]; assert torch.__version__.split("+", 1)[0] == c["torch_version"], torch.__version__'
