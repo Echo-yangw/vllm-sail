@@ -1,13 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Preserve compressed cache identity and new prefill row-shard metadata."""
+"""Preserve new prefill row-shard metadata in the selected upstream build."""
 
 from types import SimpleNamespace as NS
 
 import pytest
-
-from tests.support.source import function
-
-PATCH = "vllm_sail/patch/enhancement/attention/mla_indexer.py"
 
 
 class Values(list):
@@ -123,19 +119,6 @@ def check_result(body, row_shard_case, compress_ratio, shard):
         )
     else:
         assert result.slot_mapping is common.slot_mapping
-
-
-@pytest.mark.parametrize("compress_ratio", [1, 8])
-@pytest.mark.parametrize("shard", [False, True])
-def test_copied_producer_preserves_new_cache_geometry(
-    row_shard_case, compress_ratio, shard
-):
-    check_result(
-        lambda ns: function(PATCH, "_build_body", ns),
-        row_shard_case,
-        compress_ratio,
-        shard,
-    )
 
 
 @pytest.mark.upstream_source

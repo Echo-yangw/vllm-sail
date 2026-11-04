@@ -114,6 +114,10 @@ _ATTENTION_TARGETS = (
         "DeepseekV32IndexerMetadataBuilder.build",
     ),
     (
+        "vllm.v1.attention.backends.mla.indexer",
+        "DeepseekV32IndexerMetadataBuilder.update_draft_decode_metadata",
+    ),
+    (
         "vllm.v1.attention.ops.triton_decode_attention",
         "_decode_grouped_att_m_fwd",
     ),

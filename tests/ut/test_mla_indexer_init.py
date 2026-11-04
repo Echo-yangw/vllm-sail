@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Bare-Python regression for a copied constructor using super()."""
+"""Regression for the delegating indexer metadata-builder constructor patch."""
 
 from __future__ import annotations
 
-import ast
-import sys
-import types
-from pathlib import Path
+from types import SimpleNamespace as NS
 
 import pytest
 
@@ -16,147 +13,135 @@ from tests.ut.test_ppu_kernel_capabilities import modules as _modules
 
 modules = _modules
 
-PATCH_PATH = (
-    Path(__file__).parents[2] / "vllm_sail/patch/enhancement/attention/mla_indexer.py"
-)
+PATCH = "vllm_sail/patch/enhancement/attention/mla_indexer.py"
+TARGET = "vllm.v1.attention.backends.mla.indexer"
 
 
-@pytest.mark.parametrize("adaptive", [False, True])
-@pytest.mark.parametrize("max_tokens", [32, 1024])
-def test_indexer_reserves_only_decode_capacity(
-    modules, patch_utils_module, adaptive, max_tokens
-):
-    """Run the real constructor through all allocations using strict CPU doubles."""
-    from types import SimpleNamespace as NS
-
-    class Parent:
-        def __init__(self, config):
-            self.vllm_config = config
-            self.kv_cache_spec = object()
-            self.device = NS(index=0)
-
-    class Builder(Parent):
-        def __init__(self, *args, **kwargs):
-            pytest.fail("the registered constructor must replace this entry")
-
-        def _split_indexer_prefill_chunks(self, *args, **kwargs):
-            pytest.fail("this constructor must not split a prefill")
-
-        def build(self, *args, **kwargs):
-            pytest.fail("this constructor must not build step metadata")
-
-    class Tensor:
-        def __init__(self, shape):
-            self.shape = shape
-
-    config = NS(
-        scheduler_config=NS(max_num_seqs=16, max_num_batched_tokens=max_tokens),
-        parallel_config=NS(
-            decode_context_parallel_size=1,
-            tensor_parallel_size=8,
-            prefill_context_parallel_size=1,
-            cp_kv_cache_interleave_size=1,
-        ),
-        speculative_config=NS(
-            num_speculative_tokens=3, enable_adaptive_verification=adaptive
-        ),
-    )
-    torch = modules(
-        "torch",
-        arange=lambda size, **kwargs: Tensor((size,)),
-        zeros=lambda shape, **kwargs: Tensor(shape),
-        empty=lambda shape, **kwargs: Tensor(shape),
-        tensor=lambda value, **kwargs: Tensor(()),
-        int32="int32",
-        int64="int64",
-        float32="float32",
-    )
-    platform = NS(is_ppu=lambda: False)
-    modules("vllm.platforms", current_platform=platform)
-    modules("vllm_sail.patch.utils", patch_value=patch_utils_module.patch_value)
-    modules("vllm_sail.utils.deep_gemm")
-    provider = modules(
-        "vllm.v1.attention.backends.mla.indexer",
-        DeepseekV32IndexerMetadataBuilder=Builder,
-        MLAAttentionSpec=type("MLAAttentionSpec", (), {}),
-        get_max_prefill_buffer_size=lambda config: 128,
-        dsa_indexer_uses_fp4=lambda config: False,
-        _use_flattening=lambda config: False,
-        _supports_varlen_paged_mqa_logits=lambda: True,
-        current_platform=platform,
-        get_paged_mqa_logits_metadata=lambda *args, **kwargs: None,
-        logger=NS(info_once=lambda *args: None),
-        num_compute_units=lambda index: 80,
-        torch=torch,
-    )
-    load_patch("vllm_sail/patch/enhancement/attention/mla_indexer.py")
-    builder = provider.DeepseekV32IndexerMetadataBuilder(config, block_table_width=29)
-    assert builder.expanded_block_table_buffer.shape == (min(16 * 4, max_tokens), 29)
-    assert builder.use_adaptive_verification is adaptive
-    assert builder.num_speculative_tokens == 3
-    assert builder.supports_draft_decode_metadata_update
+class Tensor:
+    def __init__(self, shape, **kwargs):
+        self.shape = shape
+        self.dtype = kwargs.get("dtype")
+        self.device = kwargs.get("device")
 
 
-@pytest.mark.parametrize("subclass", [False, True])
-def test_rebased_indexer_init_calls_parent_once(
-    monkeypatch, patch_utils_module, subclass
-):
-    """Execute the real copied body, globals rebasing and patch installation.
+@pytest.fixture
+def builder_factory(modules, patch_utils_module):
+    def make(*, ppu, fp4=True, n_head=64, q_head_dim=128):
+        calls = []
 
-    Stop in the parent constructor: reproducing the missing class cell needs
-    neither vLLM configuration nor device allocations later in the body.
-    The subclass case also catches the recursive super(type(self), self) fix.
-    """
-    calls = []
+        class Builder:
+            def __init__(self, *args, **kwargs):
+                calls.append((args, kwargs))
+                self.kv_cache_spec = NS(
+                    indexer_n_head=n_head,
+                    indexer_q_head_dim=q_head_dim,
+                    num_states=256,
+                )
+                self.device = "ppu:0"
+                self.indexer_uses_fp4 = fp4
+                self.supports_varlen = True
+                self.num_sms = 3
+                self.scheduler_metadata_buffer = NS(shape=("upstream",))
 
-    class ParentReached(Exception):
-        pass
+            @staticmethod
+            def _split_indexer_prefill_chunks(*args, **kwargs):
+                return []
 
-    class Parent:
-        def __init__(self, *args, **kwargs):
-            calls.append((self, args, kwargs))
-            raise ParentReached
+            def build(self, *args, **kwargs):
+                return NS(decode=None)
 
-    class DeepseekV32IndexerMetadataBuilder(Parent):
-        pass
+            def update_draft_decode_metadata(self, metadata):
+                return None
 
-    class DerivedBuilder(DeepseekV32IndexerMetadataBuilder):
-        pass
+        modules(
+            "torch",
+            empty=lambda shape, **kwargs: Tensor(shape, **kwargs),
+            bfloat16="bfloat16",
+            float32="float32",
+            int32="int32",
+        )
+        modules(
+            "vllm.platforms",
+            current_platform=NS(
+                is_ppu=lambda: ppu,
+                is_device_capability=lambda capability: capability == 89,
+            ),
+        )
+        modules(
+            "vllm.v1.attention.backend",
+            CommonAttentionMetadata=type("CommonAttentionMetadata", (), {}),
+        )
+        provider = modules(
+            TARGET,
+            DeepseekV32IndexerMetadataBuilder=Builder,
+            DeepseekV32IndexerMetadata=type("DeepseekV32IndexerMetadata", (), {}),
+            DSA_INDEXER_KV_DTYPES=("fp8", "mxfp4"),
+            get_paged_mqa_logits_metadata=lambda *args, **kwargs: None,
+            dsa_indexer_uses_fp4=lambda config: False,
+        )
+        modules(
+            "vllm_sail.utils.deep_gemm",
+            get_num_sms=lambda: 7,
+            has_deep_gemm=lambda: True,
+            get_paged_mqa_logits_metadata=lambda *args: None,
+        )
+        modules(
+            "vllm_sail.patch.utils",
+            patch_value=patch_utils_module.patch_value,
+        )
+        load_patch(PATCH)
+        return provider.DeepseekV32IndexerMetadataBuilder, calls
 
-    target = types.ModuleType("_test_mla_indexer_init_target")
-    target.DeepseekV32IndexerMetadataBuilder = DeepseekV32IndexerMetadataBuilder
-    monkeypatch.setitem(sys.modules, target.__name__, target)
-    tree = ast.parse(PATCH_PATH.read_text())
-    selected = ast.Module(
-        body=[
-            node
-            for node in tree.body
-            if isinstance(node, ast.FunctionDef)
-            and node.name in ("_with_target_globals", "_builder_init_body")
-        ],
-        type_ignores=[],
-    )
-    from vllm_sail.patch.bodies import bind_body
+    return make
 
-    namespace = {"bind_body": bind_body, "_indexer_module": target}
-    exec(compile(selected, str(PATCH_PATH), "exec"), namespace)
-    replacement = namespace["_with_target_globals"](namespace["_builder_init_body"])
-    patch_utils_module.patch(
-        target.__name__,
-        "DeepseekV32IndexerMetadataBuilder.__init__",
-        reason="exercise the copied indexer constructor's parent dispatch",
-        affected_versions=">=0.27.0,<0.28.0",
-        remove_when="the indexer constructor no longer needs a copied body",
-    )(replacement)
 
-    builder_class = DerivedBuilder if subclass else DeepseekV32IndexerMetadataBuilder
-    config = object()
-    with pytest.raises(ParentReached):
-        builder_class(config, block_table_width=29, device="test-device")
+def test_ppu_fp4_constructor_delegates_then_adds_fork_state(builder_factory):
+    builder_cls, calls = builder_factory(ppu=True, fp4=True)
+    builder = builder_cls("config", block_table_width=29, device="ppu:0")
+
+    assert calls == [(("config",), {"block_table_width": 29, "device": "ppu:0"})]
+    assert builder.supports_varlen is False
+    assert builder.indexer_n_head == 64
+    assert builder.indexer_q_head_dim == 128
+    assert builder.num_sms == 7
+    assert builder.scheduler_metadata_buffer.shape == (7 * 8 + 1, 2)
+    assert builder.scheduler_metadata_buffer.dtype == "int32"
+    assert builder.scheduler_metadata_buffer.device == "ppu:0"
+
+
+def test_ppu_fp8_constructor_keeps_upstream_buffer(builder_factory):
+    builder_cls, _ = builder_factory(ppu=True, fp4=False)
+    builder = builder_cls("config")
+
+    assert builder.supports_varlen is False
+    assert builder.indexer_n_head == 0
+    assert builder.indexer_q_head_dim == 0
+    assert builder.num_sms == 7
+    assert builder.scheduler_metadata_buffer.shape == ("upstream",)
+
+
+def test_non_ppu_constructor_is_left_untouched(builder_factory):
+    builder_cls, calls = builder_factory(ppu=False)
+    builder = builder_cls("config")
+
     assert len(calls) == 1
-    assert type(calls[0][0]) is builder_class
-    assert calls[0][1:] == ((config,), {"device": "test-device"})
-    assert replacement.__globals__ is target.__dict__
+    assert builder.supports_varlen is True
+    assert builder.num_sms == 3
+    assert builder.scheduler_metadata_buffer.shape == ("upstream",)
+    assert not hasattr(builder, "indexer_n_head")
+
+
+def test_subclass_constructs_through_the_parent_once(builder_factory):
+    builder_cls, calls = builder_factory(ppu=True)
+
+    class Derived(builder_cls):
+        pass
+
+    builder = Derived("config", block_table_width=29)
+
+    assert isinstance(builder, Derived)
+    assert len(calls) == 1
+    assert calls[0][1] == {"block_table_width": 29}
 
 
 @pytest.mark.upstream_source
@@ -165,9 +150,21 @@ def test_rebased_indexer_init_calls_parent_once(
     [
         (
             "attention/mla_indexer",
-            "_builder_init_body",
+            "_builder_init_wrapper",
             "v1/attention/backends/mla/indexer",
             "DeepseekV32IndexerMetadataBuilder.__init__",
+        ),
+        (
+            "attention/mla_indexer",
+            "_build_wrapper",
+            "v1/attention/backends/mla/indexer",
+            "DeepseekV32IndexerMetadataBuilder.build",
+        ),
+        (
+            "attention/mla_indexer",
+            "_update_draft_decode_wrapper",
+            "v1/attention/backends/mla/indexer",
+            "DeepseekV32IndexerMetadataBuilder.update_draft_decode_metadata",
         ),
         (
             "attention/mla_indexer",

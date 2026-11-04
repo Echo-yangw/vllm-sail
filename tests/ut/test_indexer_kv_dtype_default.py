@@ -32,6 +32,10 @@ def installed_indexer(modules, patch_utils_module):
         )
         modules("torch", float32="fp32")
         modules("vllm.platforms", current_platform=platform)
+        modules(
+            "vllm.v1.attention.backend",
+            CommonAttentionMetadata=type("CommonAttentionMetadata", (), {}),
+        )
         modules("vllm_sail.patch.utils", patch_value=patch_utils_module.patch_value)
         modules("vllm_sail.utils.deep_gemm")
 
@@ -39,11 +43,15 @@ def installed_indexer(modules, patch_utils_module):
             def __init__(self, *args):
                 raise AssertionError("not constructing metadata in dtype test")
 
-            def _split_indexer_prefill_chunks(self, *args, **kwargs):
+            @staticmethod
+            def _split_indexer_prefill_chunks(*args, **kwargs):
                 raise AssertionError("not splitting prefills in dtype test")
 
             def build(self, *args):
                 raise AssertionError("not building a step in dtype test")
+
+            def update_draft_decode_metadata(self, metadata):
+                raise AssertionError("not refreshing draft metadata in dtype test")
 
         def upstream(value):
             calls.append(value)
@@ -52,6 +60,7 @@ def installed_indexer(modules, patch_utils_module):
         provider = modules(
             "vllm.v1.attention.backends.mla.indexer",
             DeepseekV32IndexerMetadataBuilder=Builder,
+            DeepseekV32IndexerMetadata=type("DeepseekV32IndexerMetadata", (), {}),
             get_paged_mqa_logits_metadata=lambda *args, **kwargs: None,
             dsa_indexer_uses_fp4=upstream,
             DSA_INDEXER_KV_DTYPES=("fp8", "mxfp4"),

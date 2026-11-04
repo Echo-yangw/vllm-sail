@@ -11,7 +11,7 @@
 schema = 1
 vllm_version_range = ">=0.32.0,<0.33.0"
 key_interface_count = 10
-target_count = 286
+target_count = 287
 
 [[key_interface]]
 symbol = "vllm.platforms.interface.PlatformEnum"
@@ -2144,6 +2144,14 @@ module = "vllm/v1/attention/backends/mla/indexer.py"
 symbol = "DeepseekV32IndexerMetadataBuilder.build"
 present = true
 fingerprint = "sha256:9e7510f9467fba674d61c89a1a1f2709e29ae4e3ed394f5078358d5059f33db4"
+
+[[patch_target]]
+name = "vllm.v1.attention.backends.mla.indexer.DeepseekV32IndexerMetadataBuilder.update_draft_decode_metadata"
+kind = "class"
+module = "vllm/v1/attention/backends/mla/indexer.py"
+symbol = "DeepseekV32IndexerMetadataBuilder.update_draft_decode_metadata"
+present = true
+fingerprint = "sha256:59d094b16acbc6a6c1e90d017d62b9bb7251c892f2300095f5d80b3760462479"
 
 [[patch_target]]
 name = "vllm.v1.attention.backends.mla.indexer.PPU_DEEP_GEMM_TB_PER_CU"
