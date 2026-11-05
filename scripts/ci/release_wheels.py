@@ -94,6 +94,8 @@ def plan() -> None:
         raise ValueError("expected a full upstream commit")
     outputs(
         image=entry["image"],
+        sdk_url=entry["sdk_url"],
+        pccl_url=entry["pccl_url"],
         configuration=json.dumps({key: entry[key] for key in AXES}, sort_keys=True),
         tag=tag,
         vllm_commit=pin,

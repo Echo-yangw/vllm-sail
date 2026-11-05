@@ -14,6 +14,167 @@ SCRIPT = ROOT / "scripts" / "ci" / "build_ppu_wheels.sh"
 WORKFLOW = ROOT / ".github" / "workflows" / "_ppu-build.yaml"
 
 
+@pytest.fixture
+def release_workflow():
+    import yaml
+
+    return yaml.safe_load((WORKFLOW.parent / "release.yaml").read_text())
+
+
+@pytest.mark.parametrize("sdk_version", ["2.1.1", "2.2.0"])
+def test_release_plan_forwards_matrix_install_urls(monkeypatch, tmp_path, sdk_version):
+    from scripts.ci import release_wheels
+
+    configuration = {
+        "python_version": "312",
+        "os_version": "ubuntu2404",
+        "runtime_version": "3",
+        "torch_version": "2.13.0",
+        "sdk_version": sdk_version,
+    }
+    entry = {
+        **configuration,
+        "image": "download.t-head.cn/docker_tool/ubuntu2404-py312:06",
+        "sdk_url": f"https://example.invalid/sdk-{sdk_version}.run",
+        "pccl_url": "https://example.invalid/pccl-2.2.1.tar.gz",
+    }
+    output = tmp_path / "output"
+    monkeypatch.setenv("MATRIX_JSON", json.dumps({"include": [entry]}))
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    monkeypatch.setenv("TAG_VERSION", "")
+    monkeypatch.setenv("GITHUB_REF_TYPE", "branch")
+    monkeypatch.setattr(release_wheels, "command", lambda *args: "")
+    release_wheels.plan()
+    values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+    for key in ("image", "sdk_url", "pccl_url"):
+        assert values[key] == entry[key]
+    assert json.loads(values["configuration"]) == configuration
+    assert values["tag"] == ""
+
+
+@pytest.mark.parametrize("count", [0, 2])
+def test_release_plan_rejects_non_single_matrix(monkeypatch, count):
+    from scripts.ci import release_wheels
+
+    monkeypatch.setenv("MATRIX_JSON", json.dumps({"include": [{}] * count}))
+    with pytest.raises(ValueError, match="exactly one matrix entry"):
+        release_wheels.plan()
+
+
+def test_release_workflow_prepares_the_matrix_stack_before_building(release_workflow):
+    jobs = release_workflow["jobs"]
+    prepare = jobs["prepare"]
+    build = jobs["build-wheels"]
+    for key in ("sdk_url", "pccl_url"):
+        assert prepare["outputs"][key] == "${{ steps.plan.outputs." + key + " }}"
+        assert build["env"][key.upper()] == "${{ needs.prepare.outputs." + key + " }}"
+    assert build["container"]["image"] == "${{ needs.prepare.outputs.image }}"
+    assert build["env"]["TORCH_VERSION"] == (
+        "${{ fromJSON(needs.prepare.outputs.configuration).torch_version }}"
+    )
+    assert build["env"]["PCCL_PATH"] == "/usr/local/pccl"
+    steps = build["steps"]
+    sdk = next(s for s in steps if s.get("name") == "Install the matrix SAIL SDK")
+    pccl = next(s for s in steps if s.get("name") == "Install the matrix PCCL")
+    compile_step = next(
+        s for s in steps if "scripts/build_wheels.sh" in s.get("run", "")
+    )
+    assert steps.index(sdk) < steps.index(pccl) < steps.index(compile_step)
+    assert '-- "$SDK_URL"' in sdk["run"]
+    assert "--prefix=/usr/local --silent" in sdk["run"]
+    assert "/usr/local/PPU_SDK/lib" in sdk["run"]
+    assert '-- "$PCCL_URL"' in pccl["run"]
+    assert 'test ! -L "$download_dir/extracted/pccl"' in pccl["run"]
+    assert '"$PCCL_PATH/lib"' in pccl["run"]
+    assert "ldconfig" in sdk["run"] and "ldconfig" in pccl["run"]
+    publisher = jobs["publish-ptg"]
+    assert (
+        publisher["uses"] == "t-head/ci-infra/.github/workflows/matrix-release.yml@main"
+    )
+    assert publisher["with"]["build_command"] == (
+        "${{ needs.publish-github-release.outputs.ptg_command }}"
+    )
+
+
+def test_release_build_steps_have_valid_bash_syntax(release_workflow):
+    for step in release_workflow["jobs"]["build-wheels"]["steps"]:
+        if "run" in step:
+            result = subprocess.run(
+                ["bash", "-n"], input=step["run"], capture_output=True, text=True
+            )
+            assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("torch_version", ["2.10.0", "2.13.0", ""])
+@pytest.mark.parametrize("pip_status", [0, 1])
+def test_release_build_installs_sail_torch_before_public_entrypoint(
+    release_workflow, tmp_path, torch_version, pip_status
+):
+    step = next(
+        s
+        for s in release_workflow["jobs"]["build-wheels"]["steps"]
+        if "scripts/build_wheels.sh" in s.get("run", "")
+    )
+    (tmp_path / "torch.py").write_text(f"__version__ = {torch_version + '+ppu'!r}\n")
+    stubs = r"""
+source() {
+    test "$1" = /usr/local/PPU_SDK/envsetup.sh || return 1
+    export PIP_INDEX_URL=https://sdk.invalid/simple
+    export PIP_EXTRA_INDEX_URL=https://sdk.invalid/extra
+    export LD_LIBRARY_PATH=/sdk/lib
+}
+python() {
+    if [[ "$1" == -m && "$2" == pip ]]; then
+        printf 'install:%s\n' "$*"
+        test -z "$PIP_EXTRA_INDEX_URL" || return 1
+        return "$PIP_STATUS"
+    fi
+    command "$TEST_PYTHON" "$@"
+}
+bash() {
+    test "$1" = scripts/build_wheels.sh || return 1
+    test "$2" = --output-dir || return 1
+    test "$3" = "$PWD/artifacts/release-build" || return 1
+    test "${PATH%%:*}" = "$PCCL_PATH/bin" || return 1
+    test "$LD_LIBRARY_PATH" = "$PCCL_PATH/lib:/sdk/lib" || return 1
+    test "$PIP_INDEX_URL" = https://mirrors.aliyun.com/pypi/simple/ || return 1
+    test -z "$PIP_EXTRA_INDEX_URL" || return 1
+    printf 'build-wheels-called\n'
+}
+"""
+    result = subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", stubs + step["run"]],
+        env={
+            **os.environ,
+            "TEST_PYTHON": sys.executable,
+            "PIP_STATUS": str(pip_status),
+            "PCCL_PATH": str(tmp_path / "pccl"),
+            "TORCH_VERSION": torch_version,
+            "PYTHONPATH": str(tmp_path),
+            "RELEASE_CONFIGURATION": json.dumps(
+                {
+                    "python_version": f"{sys.version_info.major}{sys.version_info.minor}",
+                    "torch_version": torch_version,
+                }
+            ),
+        },
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    success = bool(torch_version) and pip_status == 0
+    assert (result.returncode == 0) == success, result.stdout + result.stderr
+    assert ("build-wheels-called" in result.stdout) == success
+    if torch_version:
+        assert f"torch=={torch_version}" in result.stdout
+        assert (
+            "--index-url https://download.t-head.cn/artifactory/api/pypi/pypi_index/simple"
+            in result.stdout
+        )
+    else:
+        assert "install:" not in result.stdout
+
+
 def test_build_script_has_valid_bash_syntax() -> None:
     result = subprocess.run(
         ["bash", "-n", str(SCRIPT)],
