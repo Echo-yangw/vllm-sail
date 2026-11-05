@@ -219,6 +219,8 @@ _int8_mqa_logits_impl: Callable[..., Any] | None = None
 _int8_paged_mqa_logits_impl: Callable[..., Any] | None = None
 _fp8_fp4_mqa_logits_impl: Callable[..., Any] | None = None
 _fp8_fp4_paged_mqa_logits_impl: Callable[..., Any] | None = None
+_fp4_mqa_avg_logits_impl: Callable[..., Any] | None = None
+_fp4_paged_mqa_avg_logits_impl: Callable[..., Any] | None = None
 _get_paged_mqa_logits_metadata_impl: Callable[..., Any] | None = None
 _tf32_hc_prenorm_gemm_impl: Callable[..., Any] | None = None
 
@@ -254,6 +256,7 @@ def _lazy_init() -> None:
     global _fp8_mqa_logits_impl, _fp8_paged_mqa_logits_impl
     global _int8_mqa_logits_impl, _int8_paged_mqa_logits_impl
     global _fp8_fp4_mqa_logits_impl, _fp8_fp4_paged_mqa_logits_impl
+    global _fp4_mqa_avg_logits_impl, _fp4_paged_mqa_avg_logits_impl
     global _get_paged_mqa_logits_metadata_impl
     global _tf32_hc_prenorm_gemm_impl
     global _get_mn_major_tma_aligned_tensor_impl
@@ -287,6 +290,8 @@ def _lazy_init() -> None:
         or _int8_paged_mqa_logits_impl is not None
         or _fp8_fp4_mqa_logits_impl is not None
         or _fp8_fp4_paged_mqa_logits_impl is not None
+        or _fp4_mqa_avg_logits_impl is not None
+        or _fp4_paged_mqa_avg_logits_impl is not None
         or _get_paged_mqa_logits_metadata_impl is not None
         or _tf32_hc_prenorm_gemm_impl is not None
         or _get_mk_alignment_for_contiguous_layout_impl is not None
@@ -318,6 +323,8 @@ def _lazy_init() -> None:
     _int8_paged_mqa_logits_impl = getattr(_dg, "int8_paged_mqa_logits", None)
     _fp8_fp4_mqa_logits_impl = getattr(_dg, "fp8_fp4_mqa_logits", None)
     _fp8_fp4_paged_mqa_logits_impl = getattr(_dg, "fp8_fp4_paged_mqa_logits", None)
+    _fp4_mqa_avg_logits_impl = getattr(_dg, "fp8_fp4_mqa_avg_logits", None)
+    _fp4_paged_mqa_avg_logits_impl = getattr(_dg, "fp8_fp4_paged_mqa_avg_logits", None)
     _get_paged_mqa_logits_metadata_impl = getattr(
         _dg, "get_paged_mqa_logits_metadata", None
     )
@@ -860,6 +867,162 @@ def fp8_fp4_paged_mqa_logits(
     )
 
 
+# MXFP4 average-MQA geometry dictated by DeepGEMM's `fp4_paged_mqa_logits`.
+# `page_kv` must equal the kernel's compile-time `BLOCK_KV` to take its
+# single-copy fast path, and each packed row is `head_dim / 2` E2M1 value bytes
+# plus one UE8M0 byte per 32 logical values.
+FP4_AVG_NUM_HEADS = 4
+FP4_AVG_HEAD_DIM = 64
+FP4_AVG_LOGICAL_HEAD_DIM = 128
+FP4_AVG_SCALE_BYTES = FP4_AVG_LOGICAL_HEAD_DIM // 32
+FP4_AVG_ROW_BYTES = FP4_AVG_HEAD_DIM + FP4_AVG_SCALE_BYTES
+FP4_AVG_PAGE_KV = 64
+
+
+def fp4_avg_metadata_extra(next_n: int) -> tuple[int, int, int, int]:
+    """`metadata_extra` for `get_paged_mqa_logits_metadata` on the FP4 AVG path.
+
+    DeepGEMM asserts the FP4 paged AVG schedule buffer was sized from
+    ``(next_n, num_heads, packed head_dim, element_size)`` and rejects any other
+    combination at launch, so callers must not guess these values.
+    """
+    return (next_n, FP4_AVG_NUM_HEADS, FP4_AVG_HEAD_DIM, 1)
+
+
+def has_fp4_mqa_avg_logits() -> bool:
+    """Whether DeepGEMM exposes the non-paged MXFP4 average MQA logits kernel.
+
+    Available on DeepGEMM main, so the QSA prefill scorer can rely on it.
+    """
+    _lazy_init()
+    return _fp4_mqa_avg_logits_impl is not None
+
+
+def has_fp4_paged_mqa_avg_logits() -> bool:
+    """Whether DeepGEMM exposes the paged MXFP4 average MQA logits kernel.
+
+    DeepGEMM main rejects paged FP4 avg outright (`avg variant supports fp8
+    only`); the entry point only exists in the PR that lifts that check. The QSA
+    decode scorer keeps no bf16 fallback, so callers must fail loudly with this
+    probe rather than degrade to a layout the kernels cannot read.
+    """
+    _lazy_init()
+    return _fp4_paged_mqa_avg_logits_impl is not None
+
+
+def fp4_mqa_avg_logits(
+    q: tuple[torch.Tensor, torch.Tensor],
+    kv: tuple[torch.Tensor, torch.Tensor],
+    cu_seqlen_ks: torch.Tensor,
+    cu_seqlen_ke: torch.Tensor,
+    max_seqlen_k: int,
+    q_scale: torch.Tensor | None = None,
+    logits_dtype: torch.dtype | None = None,
+) -> torch.Tensor:
+    """Score contiguous MXFP4 keys with the average MQA logits kernel.
+
+    Average mode computes ``sum_h(relu(q_h . k)) * k_scale / sqrt(128)`` with
+    unity head weights, so unlike `fp8_fp4_mqa_logits` there is no `weights`
+    argument and `num_heads` must be exactly `FP4_AVG_NUM_HEADS`. Normalization
+    uses the logical head dimension (128), not the packed one.
+
+    Args:
+        q: Tuple ``(q_values, q_sf)`` where `q_values` is `[M, 4, 64]` int8
+            holding two E2M1 values per byte and `q_sf` is `[M, 4]` int32
+            holding the packed UE8M0 block scales.
+        kv: Tuple ``(k_values, k_sf)`` where `k_values` is `[N, 64]` int8 and
+            `k_sf` is `[N]` int32.
+        cu_seqlen_ks: Inclusive start of the valid K range per query row, shape
+            `[M]`, dtype int32.
+        cu_seqlen_ke: Exclusive end of the valid K range per query row, shape
+            `[M]`, dtype int32.
+        max_seqlen_k: Width of the compressed logits output. Must be a real
+            upper bound on ``cu_seqlen_ke - cu_seqlen_ks`` rather than the
+            DeepGEMM default of 0: newer DeepGEMM builds require compression for
+            FP4 average logits, and it keeps the transient buffer proportional to
+            each request's own context instead of the whole packed key space.
+        q_scale: Optional scalar or per-Q-row multiplier applied after the head
+            reduction.
+        logits_dtype: Output dtype. Defaults to `torch.float32` because the
+            DeepGEMM FP4 entries default to `torch.bfloat16`.
+
+    Returns:
+        Logits of shape `[M, max_seqlen_k]`, dtype `logits_dtype`, compacted
+        relative to `cu_seqlen_ks`. Entries outside a row's valid range are left
+        untouched, so the caller must mask them.
+    """
+    _lazy_init()
+    if _fp4_mqa_avg_logits_impl is None:
+        return _missing()
+    if logits_dtype is None:
+        logits_dtype = torch.float32
+    kwargs = {} if q_scale is None else {"q_scale": q_scale}
+    return _fp4_mqa_avg_logits_impl(
+        q,
+        kv,
+        cu_seqlen_ks,
+        cu_seqlen_ke,
+        # DeepGEMM rejects cleaning together with compression.
+        clean_logits=False,
+        max_seqlen_k=max_seqlen_k,
+        logits_dtype=logits_dtype,
+        **kwargs,
+    )
+
+
+def fp4_paged_mqa_avg_logits(
+    q: tuple[torch.Tensor, torch.Tensor],
+    kv_cache: torch.Tensor,
+    context_lens: torch.Tensor,
+    block_tables: torch.Tensor,
+    schedule_metadata: torch.Tensor,
+    max_context_len: int,
+    logits_dtype: torch.dtype | None = None,
+) -> torch.Tensor:
+    """Score a paged MXFP4 key cache with the average MQA logits kernel.
+
+    Args:
+        q: Tuple ``(q_values, q_sf)`` where `q_values` is `[B, next_n, 4, 64]`
+            int8 and `q_sf` is `[B, next_n, 4]` int32. `next_n` must be in
+            `[1, 6]`.
+        kv_cache: Paged cache of shape `[num_blocks, page_kv, 1, 68]`, dtype
+            `torch.uint8`. Each page is planar: all `page_kv` rows of 64 packed
+            value bytes first, then `page_kv` rows of 4 UE8M0 scale bytes. The
+            kernel reads scales from `storage_offset + page_kv * head_dim`, so an
+            interleaved per-row layout is silently misread.
+        context_lens: Effective context length per Q row, shape `[B, next_n]`,
+            dtype int32. The 2-D form is what selects average mode, and it
+            forbids `clean_logits`; mask outside the kernel.
+        block_tables: Logical-to-physical page map, shape `[B, max_blocks]`,
+            dtype int32.
+        schedule_metadata: From `get_paged_mqa_logits_metadata` built with
+            `metadata_extra=fp4_avg_metadata_extra(next_n)`. DeepGEMM asserts its
+            size matches `get_num_sms() * tb_per_cu` at launch.
+        max_context_len: Maximum sequence length used to size the logits output.
+        logits_dtype: Output dtype. Defaults to `torch.float32` because the
+            DeepGEMM FP4 entries default to `torch.bfloat16`.
+
+    Returns:
+        Logits of shape `[B * next_n, max_context_len]`, dtype `logits_dtype`,
+        indexed by absolute KV position.
+    """
+    _lazy_init()
+    if _fp4_paged_mqa_avg_logits_impl is None:
+        return _missing()
+    if logits_dtype is None:
+        logits_dtype = torch.float32
+    return _fp4_paged_mqa_avg_logits_impl(
+        q,
+        kv_cache,
+        context_lens,
+        block_tables,
+        schedule_metadata,
+        max_context_len,
+        clean_logits=False,
+        logits_dtype=logits_dtype,
+    )
+
+
 def tf32_hc_prenorm_gemm(
     x: torch.Tensor,
     fn: torch.Tensor,
@@ -1203,6 +1366,17 @@ __all__ = [
     "int8_paged_mqa_logits",
     "fp8_fp4_mqa_logits",
     "fp8_fp4_paged_mqa_logits",
+    "fp4_mqa_avg_logits",
+    "fp4_paged_mqa_avg_logits",
+    "has_fp4_mqa_avg_logits",
+    "has_fp4_paged_mqa_avg_logits",
+    "fp4_avg_metadata_extra",
+    "FP4_AVG_NUM_HEADS",
+    "FP4_AVG_HEAD_DIM",
+    "FP4_AVG_LOGICAL_HEAD_DIM",
+    "FP4_AVG_SCALE_BYTES",
+    "FP4_AVG_ROW_BYTES",
+    "FP4_AVG_PAGE_KV",
     "get_paged_mqa_logits_metadata",
     "per_block_cast_to_fp8",
     "is_deep_gemm_e8m0_used",
