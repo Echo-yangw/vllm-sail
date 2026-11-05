@@ -41,6 +41,7 @@ EXPECTED_MODULES = {
     "deepseek_v4_compressor",
     "glm5_next",
     "kimi_k3",
+    "kimi_k3_dsa_indexer",
     "llama4",
     "minimax_m3",
     "moe_marlin_gate",

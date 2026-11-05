@@ -11,7 +11,7 @@
 schema = 1
 vllm_version_range = ">=0.32.0,<0.33.0"
 key_interface_count = 10
-target_count = 287
+target_count = 293
 
 [[key_interface]]
 symbol = "vllm.platforms.interface.PlatformEnum"
@@ -41,7 +41,7 @@ fingerprint = "sha256:b000add51e983eda3dee41ae9b7a040ec14f912ba762472274a835f800
 symbol = "vllm.v1.attention.backend.AttentionBackend"
 kind = "class"
 present = true
-fingerprint = "sha256:595b8b8ee8c8ee9abd7b96443f43792c567c7d385d7b89ef7d9b702661365ff4"
+fingerprint = "sha256:2cff50decd47b6043e1a8c0bc4f95706685798a04186670eb1e5b88d34493196"
 
 [[key_interface]]
 symbol = "vllm.v1.attention.backend.AttentionMetadataBuilder"
@@ -127,7 +127,7 @@ kind = "module"
 module = "vllm/envs.py"
 symbol = "environment_variables"
 present = true
-fingerprint = "sha256:6efb78915386dcd5112e40c65c6ba11eaa0e05916b1ea988145b7af8b4fcc1b8"
+fingerprint = "sha256:2d2c7d3be73a60e6d121219e45585487deecbfe3f58dee3f4ce3c6106e7c42a3"
 
 [[patch_target]]
 name = "vllm.lora.layers.utils.try_get_optimal_moe_config"
@@ -1399,7 +1399,7 @@ kind = "class"
 module = "vllm/model_executor/layers/sparse_attn_indexer.py"
 symbol = "SparseAttnIndexer.__init__"
 present = true
-fingerprint = "sha256:65bf18a3a62816956dd8b61fb0d001c94d15584ab2d16f04c1711eef2db13a5a"
+fingerprint = "sha256:b70c7e79e6f0549aa48f086f3063470d9fb7f34064bedde600f0fe9f62326d92"
 
 [[patch_target]]
 name = "vllm.model_executor.layers.sparse_attn_indexer.SparseAttnIndexer.forward_native"
@@ -1418,12 +1418,36 @@ present = false
 fingerprint = ""
 
 [[patch_target]]
+name = "vllm.model_executor.layers.sparse_attn_indexer.fp8_fp4_mqa_logits"
+kind = "module"
+module = "vllm/model_executor/layers/sparse_attn_indexer.py"
+symbol = "fp8_fp4_mqa_logits"
+present = true
+fingerprint = "sha256:5219806a48a936f8777133f4da9675206d93f9a7bb8f7c3e3f1f70903ed98a30"
+
+[[patch_target]]
+name = "vllm.model_executor.layers.sparse_attn_indexer.fp8_fp4_paged_mqa_logits"
+kind = "module"
+module = "vllm/model_executor/layers/sparse_attn_indexer.py"
+symbol = "fp8_fp4_paged_mqa_logits"
+present = true
+fingerprint = "sha256:5219806a48a936f8777133f4da9675206d93f9a7bb8f7c3e3f1f70903ed98a30"
+
+[[patch_target]]
 name = "vllm.model_executor.layers.sparse_attn_indexer.has_cutedsl"
 kind = "module"
 module = "vllm/model_executor/layers/sparse_attn_indexer.py"
 symbol = "has_cutedsl"
 present = true
 fingerprint = "sha256:f0b8190f5e389d18b797784733fd9f983757ca522a31079f096f165b053461a7"
+
+[[patch_target]]
+name = "vllm.model_executor.layers.sparse_attn_indexer.mqa_logits_mx_inputs"
+kind = "module"
+module = "vllm/model_executor/layers/sparse_attn_indexer.py"
+symbol = "mqa_logits_mx_inputs"
+present = true
+fingerprint = "sha256:5219806a48a936f8777133f4da9675206d93f9a7bb8f7c3e3f1f70903ed98a30"
 
 [[patch_target]]
 name = "vllm.model_executor.layers.utils.dispatch_unquantized_gemm"
@@ -1816,6 +1840,30 @@ module = "vllm/models/kimi_k3/nvidia/model.py"
 symbol = "KimiRoutedOutputTransform.forward"
 present = true
 fingerprint = "sha256:82d672f98450ec92117cb7a8a39de7cac5e84d99e190614319005ae41e6e7c49"
+
+[[patch_target]]
+name = "vllm.models.kimi_k3.nvidia.ops.dsa_indexer.dsa_fused_prologue"
+kind = "module"
+module = "vllm/models/kimi_k3/nvidia/ops/dsa_indexer.py"
+symbol = "dsa_fused_prologue"
+present = true
+fingerprint = "sha256:ca8a13e456d54c0fd4db7c0aa9a2a57b4215db3dc5157a1634490214c20cec2a"
+
+[[patch_target]]
+name = "vllm.models.kimi_k3.nvidia.ops.dsa_indexer.indexer_k_norm_quant_insert"
+kind = "module"
+module = "vllm/models/kimi_k3/nvidia/ops/dsa_indexer.py"
+symbol = "indexer_k_norm_quant_insert"
+present = true
+fingerprint = "sha256:db30436b51cd76997744efafa8bc264b68223c549b059c6e9a0eb29e39ad671d"
+
+[[patch_target]]
+name = "vllm.models.kimi_k3.nvidia.ops.dsa_indexer.indexer_q_quant_fold_weights"
+kind = "module"
+module = "vllm/models/kimi_k3/nvidia/ops/dsa_indexer.py"
+symbol = "indexer_q_quant_fold_weights"
+present = true
+fingerprint = "sha256:e02e807eb55f78d9547826863169d4de87c19b379c9eb4f690713a1c1046c97e"
 
 [[patch_target]]
 name = "vllm.models.minimax_m3.common.ops.dspark_context_kv.DSparkContextKVWriter.supported"
