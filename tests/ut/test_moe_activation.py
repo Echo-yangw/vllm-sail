@@ -44,7 +44,13 @@ def test_ppu_experts_reuse_base_activation_config(batched, mxfp4):
         ],
         type_ignores=[],
     )
-    namespace = {"Base": Base}
+    namespace = {
+        "Base": Base,
+        "CUDAGraphMode": SimpleNamespace(NONE="NONE"),
+        "get_current_vllm_config": lambda: SimpleNamespace(
+            compilation_config=SimpleNamespace(cudagraph_mode="NONE")
+        ),
+    }
     exec(compile(ast.fix_missing_locations(tree), str(path), "exec"), namespace)
     moe = SimpleNamespace(activation_situ_beta=None, activation_situ_linear_beta=None)
     quant = SimpleNamespace(

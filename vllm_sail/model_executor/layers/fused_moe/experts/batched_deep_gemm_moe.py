@@ -4,6 +4,7 @@
 
 import torch
 import vllm.model_executor.layers.fused_moe.modular_kernel as mk
+from vllm.config import CUDAGraphMode, get_current_vllm_config
 from vllm.forward_context import get_forward_context, is_forward_context_available
 from vllm.logger import init_logger
 from vllm.model_executor.layers.fused_moe.activation import MoEActivation
@@ -108,7 +109,6 @@ def _silu_mul_quant_deep_gemm(
 ):
     # 3D grid: (G, token_parallel_blocks, E)
     # axis-0 = group index, axis-1 = token block index, axis-2 = expert
-    G = H // GROUP_SIZE
     SITU_INV_BETA: tl.constexpr = 1.0 / SITU_BETA
     SITU_LINEAR_INV_BETA: tl.constexpr = (
         1.0 / SITU_LINEAR_BETA if SITU_LINEAR_BETA > 0 else 0.0
@@ -1278,6 +1278,27 @@ class PPUBatchedDeepGemmExpertsW4FA16MMA(PPUBatchedDeepGemmExperts):
         )
 
 
+def _mxfp4_workspace_tokens(
+    capacity: int,
+    token_limit: int,
+    expert_tokens_meta: mk.ExpertTokensMetadata | None,
+) -> int:
+    if expert_tokens_meta is None or torch.cuda.is_current_stream_capturing():
+        return capacity
+    counts = expert_tokens_meta.expert_num_tokens_cpu
+    if counts is None:
+        assert expert_tokens_meta.expert_num_tokens is not None
+        counts = expert_tokens_meta.expert_num_tokens.cpu()
+        expert_tokens_meta.expert_num_tokens_cpu = counts
+    assert token_limit > 0
+    if counts.numel() == 0:
+        return min(capacity, token_limit, 128)
+    max_tokens = int(counts.max().item())
+    assert int(counts.min().item()) >= 0
+    assert max_tokens <= capacity
+    return min(capacity, token_limit, round_up(max(1, max_tokens), 128))
+
+
 class PPUBatchedDeepGemmExpertsMXFP4(mk.FusedMoEExpertsModular):
     """
     PPU DeepGEMM-based batched fused MoE expert implementation for MXFP4.
@@ -1299,6 +1320,10 @@ class PPUBatchedDeepGemmExpertsMXFP4(mk.FusedMoEExpertsModular):
             quant_config=quant_config,
             max_num_tokens=max_num_tokens,
             num_dispatchers=num_dispatchers,
+        )
+        self._compact_workspace = (
+            get_current_vllm_config().compilation_config.cudagraph_mode
+            == CUDAGraphMode.NONE
         )
         # Fused PPU kernels and the upstream fallback share the configuration
         # built by FusedMoEExperts.__init__ via from_configs(moe_config, quant_config).
@@ -1374,15 +1399,18 @@ class PPUBatchedDeepGemmExpertsMXFP4(mk.FusedMoEExpertsModular):
         expert_tokens_meta: mk.ExpertTokensMetadata | None,
         activation: MoEActivation,
     ) -> tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...]]:
-        assert self.num_dispatchers is not None
         assert self.max_num_tokens is not None
-        num_dispatchers = self.num_dispatchers
-        num_experts = local_num_experts
-        max_num_tokens = M if self.max_num_tokens is None else self.max_num_tokens
+        assert self.num_dispatchers is not None
+        token_limit = round_up(cdiv(self.max_num_tokens, self.num_dispatchers), 128)
+        workspace_tokens = (
+            _mxfp4_workspace_tokens(M, token_limit, expert_tokens_meta)
+            if self._compact_workspace
+            else M
+        )
         activation_out_dim = self.adjust_N_for_activation(N, activation)
-        workspace13 = (num_experts, max_num_tokens * num_dispatchers, max(K, N))
-        workspace2 = (num_experts, max_num_tokens * num_dispatchers, activation_out_dim)
-        output = (num_experts, max_num_tokens * num_dispatchers, K)
+        workspace13 = (local_num_experts, workspace_tokens, max(K, N))
+        workspace2 = (local_num_experts, workspace_tokens, activation_out_dim)
+        output = (local_num_experts, M, K)
         return (workspace13, workspace2, output)
 
     def estimate_expected_m(
@@ -1411,6 +1439,79 @@ class PPUBatchedDeepGemmExpertsMXFP4(mk.FusedMoEExpertsModular):
         return estimate
 
     def apply(
+        self,
+        output: torch.Tensor,
+        hidden_states: torch.Tensor,
+        w1: torch.Tensor,
+        w2: torch.Tensor,
+        topk_weights: torch.Tensor,
+        topk_ids: torch.Tensor,
+        activation: MoEActivation,
+        global_num_experts: int,
+        expert_map: torch.Tensor | None,
+        a1q_scale: torch.Tensor | None,
+        a2_scale: torch.Tensor | None,
+        workspace13: torch.Tensor,
+        workspace2: torch.Tensor,
+        expert_tokens_meta: mk.ExpertTokensMetadata | None,
+        apply_router_weight_on_input: bool,
+    ):
+        assert expert_tokens_meta is not None
+        chunk_tokens = workspace13.shape[1]
+        capacity = hidden_states.shape[1]
+        chunk_args = dict(
+            w1=w1,
+            w2=w2,
+            topk_weights=topk_weights,
+            topk_ids=topk_ids,
+            activation=activation,
+            global_num_experts=global_num_experts,
+            expert_map=expert_map,
+            a2_scale=a2_scale,
+            workspace13=workspace13,
+            workspace2=workspace2,
+            apply_router_weight_on_input=apply_router_weight_on_input,
+        )
+        if chunk_tokens == capacity:
+            return self._apply_chunk(
+                output,
+                hidden_states,
+                a1q_scale=a1q_scale,
+                expert_tokens_meta=expert_tokens_meta,
+                **chunk_args,
+            )
+        assert a1q_scale is not None
+        counts_cpu = expert_tokens_meta.expert_num_tokens_cpu
+        assert counts_cpu is not None
+        active_tokens = int(counts_cpu.max().item()) if counts_cpu.numel() else 0
+        counts = expert_tokens_meta.expert_num_tokens
+        assert counts is not None
+        if active_tokens == 0:
+            return
+        # workspace13 can alias the full output and overwrite preceding chunks.
+        chunk_args["workspace13"] = torch.empty_like(workspace13)
+        for start in range(0, active_tokens, chunk_tokens):
+            end = min(start + chunk_tokens, capacity)
+            chunk_counts = (counts - start).clamp(min=0, max=end - start)
+            chunk_scale = (
+                a1q_scale[:, start:end].transpose(1, 2).contiguous().transpose(1, 2)
+            )
+            # The full output can alias workspace13, so GEMM2 needs disjoint storage.
+            chunk_output = torch.empty(
+                (output.shape[0], end - start, output.shape[-1]),
+                dtype=output.dtype,
+                device=output.device,
+            )
+            self._apply_chunk(
+                chunk_output,
+                hidden_states[:, start:end].contiguous(),
+                a1q_scale=chunk_scale,
+                expert_tokens_meta=mk.ExpertTokensMetadata(chunk_counts, None),
+                **chunk_args,
+            )
+            output[:, start:end].copy_(chunk_output)
+
+    def _apply_chunk(
         self,
         output: torch.Tensor,
         hidden_states: torch.Tensor,
@@ -1501,7 +1602,6 @@ class PPUBatchedDeepGemmExpertsMXFP4(mk.FusedMoEExpertsModular):
             )
             a2q, a2q_scale = downcast_to_mxfp4(act_out, axis=-1)
 
-        # for mxfp4, output hidden_size = K * 2 (unpacked)
         fp4_m_grouped_gemm_nt_masked(
             (a2q, a2q_scale),
             (w2, self.w2_scale),
