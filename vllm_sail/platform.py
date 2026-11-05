@@ -223,6 +223,11 @@ class PPUPlatform(NvmlCudaPlatform):
         if "+sparse_attn_indexer" not in compilation_config.custom_ops:
             compilation_config.custom_ops.append("+sparse_attn_indexer")
 
+        # Same for the glm5_next kpool indexer (additionally registers the
+        # `ppu_sparse_attn_indexer_kpool` custom op via vllm_sail.ops).
+        if "+sparse_attn_indexer_kpool" not in compilation_config.custom_ops:
+            compilation_config.custom_ops.append("+sparse_attn_indexer_kpool")
+
         # Prefer the compiled dynamic_per_token_scaled_fp8_quant kernel over the
         # fused Triton kernel torch.compile generates from forward_native: on PPU
         # the compiled path is faster. Respect an explicit user opt-out.
@@ -231,6 +236,28 @@ class PPUPlatform(NvmlCudaPlatform):
             and "+quant_fp8" not in compilation_config.custom_ops
         ):
             compilation_config.custom_ops.append("+quant_fp8")
+
+    @classmethod
+    def _get_indexer_block_alignment(cls, vllm_config: VllmConfig) -> int | None:
+        """Align the cache block so kpool pool pages hold 64 entries.
+
+        GLM-5.3-Flash's kpool indexer splits each KV cache block into pool pages
+        and the block size must cover whole pages. Upstream CUDA aligns to
+        ``index_kpool * min(PAGED_MQA_PAGE_SIZES)``, which for ``index_kpool`` 4
+        yields 128 tokens and therefore 32-entry pages. PPU's INT8 paged
+        MQA-logits kernel asserts ``block_kv == 64`` (deep_gemm
+        ``common_mqa.hpp``), so align to the largest legal page instead --
+        the same adjustment upstream makes for sm120, whose kernel has the same
+        restriction.
+        """
+        index_kpool = getattr(
+            vllm_config.model_config.hf_text_config, "index_kpool", None
+        )
+        if not index_kpool or index_kpool <= 1:
+            return None
+        from vllm.utils.deep_gemm import PAGED_MQA_PAGE_SIZES
+
+        return index_kpool * max(PAGED_MQA_PAGE_SIZES)
 
     @classmethod
     def is_arch_support_pdl(cls) -> bool:

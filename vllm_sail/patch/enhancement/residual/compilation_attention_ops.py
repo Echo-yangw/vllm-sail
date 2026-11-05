@@ -24,19 +24,23 @@ from vllm_sail.patch.utils import patch
 
 _MODULE = "vllm.config.compilation"
 _TARGET = "CompilationConfig.set_splitting_ops_for_v1"
-_PPU_ATTN_OP = "vllm::ppu_sparse_attn_indexer"
+_PPU_ATTN_OPS = (
+    "vllm::ppu_sparse_attn_indexer",
+    "vllm::ppu_sparse_attn_indexer_kpool",
+)
 REASON = (
-    "The PPU sparse-attention indexer torch op must be a piecewise-cudagraph "
-    "splitting point exactly like upstream's vllm::sparse_attn_indexer. The "
-    "fork adds it to CompilationConfig._attention_ops; without it the op is "
-    "traced into a piecewise graph segment instead of being an attention "
-    "boundary."
+    "The PPU sparse-attention indexer torch ops must be piecewise-cudagraph "
+    "splitting points exactly like upstream's vllm::sparse_attn_indexer. The "
+    "fork adds vllm::ppu_sparse_attn_indexer to CompilationConfig._attention_ops; "
+    "the kpool op (glm5_next) needs the same treatment. Without this the ops "
+    "are traced into a piecewise graph segment instead of being attention "
+    "boundaries."
 )
 AFFECTED_VERSIONS = ">=0.31.0,<0.32.0"
 REMOVE_WHEN = (
-    "upstream includes vllm::ppu_sparse_attn_indexer in "
-    "CompilationConfig._attention_ops itself, or the PPU indexer stops "
-    "registering its own torch op and reuses vllm::sparse_attn_indexer."
+    "upstream includes the PPU indexer ops in CompilationConfig._attention_ops "
+    "itself, or the PPU indexers stop registering their own torch ops and reuse "
+    "vllm::sparse_attn_indexer."
 )
 
 #: (target, reason, affected versions, remove_when) for every patch installed
@@ -67,8 +71,9 @@ def install() -> None:
     )
     def set_splitting_ops_for_v1(self, all2all_backend, data_parallel_size=1):
         attention_ops = type(self)._attention_ops
-        if _PPU_ATTN_OP not in attention_ops:
-            attention_ops.append(_PPU_ATTN_OP)
+        for op in _PPU_ATTN_OPS:
+            if op not in attention_ops:
+                attention_ops.append(op)
         return _upstream_set_splitting_ops(self, all2all_backend, data_parallel_size)
 
     _installed = True
