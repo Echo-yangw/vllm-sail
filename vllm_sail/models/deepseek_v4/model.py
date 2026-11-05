@@ -157,3 +157,12 @@ class DeepseekV4ForCausalLM(NvidiaDeepseekV4ForCausalLM):
         super().__init__(vllm_config=vllm_config, prefix=prefix)
         if selected_mapper is not None:
             self.hf_to_vllm_mapper = selected_mapper
+
+    def get_model_state_cls(self):
+        from vllm.v1.worker.gpu.model_states.default import DefaultModelState
+
+        if self.model.parallel_config.prefill_context_parallel_size <= 1:
+            return DefaultModelState
+        from vllm_sail.models.deepseek_v4.pcp import DeepseekV4PCPModelState
+
+        return DeepseekV4PCPModelState

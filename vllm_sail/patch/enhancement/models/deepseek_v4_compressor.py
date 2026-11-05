@@ -60,20 +60,27 @@ def _compressor_metadata_init(self, *args, **kwargs) -> None:
     self._ppu_pcp_max_reqs = max_reqs
 
 
-def _gather_compressor_metadata(self, metadata, common_attn_metadata) -> None:
+def _gather_compressor_metadata(
+    self, metadata, common_attn_metadata, pcp_shared_metadata=None
+) -> None:
     from vllm.distributed import get_pcp_group
 
     group = get_pcp_group()
     pcp_size = self._ppu_pcp_size
     local_tokens = metadata.slot_mapping.numel() // pcp_size
-    local_num_reqs = _compressor.torch.tensor(
-        [common_attn_metadata.num_reqs],
-        dtype=_compressor.torch.int32,
-        device=self.device,
-    )
-    gather_num_reqs = max(
-        1, int(group.all_gather(local_num_reqs, dim=0).max().item())
-    )
+    if pcp_shared_metadata is None:
+        local_num_reqs = _compressor.torch.tensor(
+            [common_attn_metadata.num_reqs],
+            dtype=_compressor.torch.int32,
+            device=self.device,
+        )
+        gather_num_reqs = max(
+            1, int(group.all_gather(local_num_reqs, dim=0).max().item())
+        )
+    else:
+        gather_num_reqs = pcp_shared_metadata.get_gather_num_reqs(
+            common_attn_metadata, self.device
+        )
     assert gather_num_reqs <= self._ppu_pcp_max_reqs
 
     block_table_width = metadata.block_table.shape[1]
@@ -98,21 +105,31 @@ def _gather_compressor_metadata(self, metadata, common_attn_metadata) -> None:
     pcp_block_table.copy_(gathered_block_table).clamp_(min=0)
 
     assert metadata.token_to_req_indices is not None
-    local_req_indices = self._ppu_pcp_local_req_indices[:local_tokens]
-    local_req_indices.zero_()
-    local_req_indices[: common_attn_metadata.num_actual_tokens].copy_(
-        metadata.token_to_req_indices
-    )
-    local_req_indices += group.rank_in_group * gather_num_reqs
-    num_tokens = local_tokens * pcp_size
-    pcp_req_indices = self._ppu_pcp_token_to_req_indices[:num_tokens]
-    pcp_req_indices.copy_(group.all_gather(local_req_indices, dim=0))
+    if pcp_shared_metadata is None:
+        local_req_indices = self._ppu_pcp_local_req_indices[:local_tokens]
+        local_req_indices.zero_()
+        local_req_indices[: common_attn_metadata.num_actual_tokens].copy_(
+            metadata.token_to_req_indices
+        )
+        local_req_indices += group.rank_in_group * gather_num_reqs
+        num_tokens = local_tokens * pcp_size
+        pcp_req_indices = self._ppu_pcp_token_to_req_indices[:num_tokens]
+        pcp_req_indices.copy_(group.all_gather(local_req_indices, dim=0))
 
-    assert common_attn_metadata.positions is not None
-    pcp_positions = self._ppu_pcp_positions[:num_tokens]
-    pcp_positions.copy_(
-        group.all_gather(common_attn_metadata.positions.contiguous(), dim=0)
-    )
+        assert common_attn_metadata.positions is not None
+        pcp_positions = self._ppu_pcp_positions[:num_tokens]
+        pcp_positions.copy_(
+            group.all_gather(common_attn_metadata.positions.contiguous(), dim=0)
+        )
+    else:
+        pcp_req_indices = pcp_shared_metadata.get_token_to_req_indices(
+            common_attn_metadata,
+            local_tokens,
+            metadata.token_to_req_indices,
+            self._ppu_pcp_local_req_indices,
+            self._ppu_pcp_token_to_req_indices,
+        )
+        pcp_positions = pcp_shared_metadata.get_cache_positions(common_attn_metadata)
     metadata.block_table = pcp_block_table
     metadata.token_to_req_indices = pcp_req_indices
     metadata.cache_positions = pcp_positions
@@ -145,13 +162,16 @@ def compressor_metadata_init(self, *args, **kwargs) -> None:
     remove_when="upstream PR #65305 lands with PCP compressor metadata gathering.",
 )
 def compressor_metadata_build(
-    self, common_prefix_len, common_attn_metadata, fast_build=False
+    self, common_prefix_len, common_attn_metadata, fast_build=False,
+    pcp_shared_metadata=None,
 ):
     metadata = _upstream_metadata_build(
         self, common_prefix_len, common_attn_metadata, fast_build
     )
     if _compressor.current_platform.is_ppu() and self._ppu_pcp_size > 1:
-        _gather_compressor_metadata(self, metadata, common_attn_metadata)
+        _gather_compressor_metadata(
+            self, metadata, common_attn_metadata, pcp_shared_metadata
+        )
     return metadata
 
 

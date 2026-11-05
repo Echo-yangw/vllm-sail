@@ -309,3 +309,167 @@ def test_qnorm_rope_cache_insert_supports_split_pcp_writes(runtime):
     assert q_only.shape == (tokens, padded_heads, 512)
     assert bool(torch.isfinite(q_only).all())
     torch.testing.assert_close(cache, written, rtol=0, atol=0)
+
+
+def _shared_pcp_metadata_worker(rank, world_size, port, empty_rank):
+    import torch
+    from vllm.config import (
+        ParallelConfig,
+        SchedulerConfig,
+        VllmConfig,
+        set_current_vllm_config,
+    )
+    from vllm.distributed import (
+        cleanup_dist_env_and_memory,
+        init_distributed_environment,
+        initialize_model_parallel,
+    )
+    from vllm.v1.attention.backend import CommonAttentionMetadata
+    from vllm.v1.kv_cache_interface import SlidingWindowMLASpec
+
+    import vllm_sail
+
+    torch.cuda.set_device(rank)
+    vllm_sail.register()
+    vllm_sail.register_out_of_tree()
+    from vllm.models.deepseek_v4.compressor import CompressorMetadataBuilder
+
+    from vllm_sail.models.deepseek_v4.pcp import PCPSharedMetadata
+
+    config = VllmConfig(
+        parallel_config=ParallelConfig(prefill_context_parallel_size=world_size),
+        scheduler_config=SchedulerConfig(
+            max_num_batched_tokens=16,
+            max_num_seqs=4,
+            max_model_len=64,
+            is_encoder_decoder=False,
+            enable_chunked_prefill=True,
+        ),
+    )
+    with set_current_vllm_config(config):
+        init_distributed_environment(world_size, rank, f"tcp://127.0.0.1:{port}", rank)
+        initialize_model_parallel(prefill_context_model_parallel_size=world_size)
+        try:
+            query_start = [0, 2, 4] if rank == 0 else [0, 0 if empty_rank else 2]
+            query_start_cpu = torch.tensor(query_start, dtype=torch.int32)
+            seq_lens = [2, 4] if rank == 0 else [0 if empty_rank else 6]
+            positions = (
+                [0, 1, 2, 3] if rank == 0 else ([0] * 4 if empty_rank else [4, 5, 0, 0])
+            )
+            slots = [0, 1, 2, 3] + ([-1] * 4 if empty_rank else [4, 5, -1, -1])
+            common = CommonAttentionMetadata(
+                query_start_loc=query_start_cpu.cuda(),
+                query_start_loc_cpu=query_start_cpu,
+                seq_lens=torch.tensor(seq_lens, dtype=torch.int32, device="cuda"),
+                seq_lens_cpu_upper_bound=torch.tensor(seq_lens, dtype=torch.int32),
+                num_reqs=len(seq_lens),
+                num_actual_tokens=query_start[-1],
+                max_query_len=2,
+                max_seq_len=6,
+                block_table_tensor=torch.full(
+                    (len(seq_lens), 2), 10 + rank, dtype=torch.int32, device="cuda"
+                ),
+                slot_mapping=torch.tensor(slots, dtype=torch.int64, device="cuda"),
+                positions=torch.tensor(positions, dtype=torch.int64, device="cuda"),
+            )
+            spec = SlidingWindowMLASpec(
+                block_size=4,
+                num_kv_heads=1,
+                head_size=512,
+                dtype=torch.float32,
+                sliding_window=8,
+            )
+            builders = [
+                CompressorMetadataBuilder(
+                    spec, [f"state{i}"], config, torch.device("cuda", rank)
+                )
+                for i in range(2)
+            ]
+            shared = PCPSharedMetadata()
+            cache_positions = shared.get_cache_positions(common)
+            results = []
+            for index, builder in enumerate(builders):
+                cm = common.replace(
+                    block_table_tensor=common.block_table_tensor + index * 20
+                )
+                results.append(builder.build(0, cm, pcp_shared_metadata=shared))
+            assert (
+                results[0].cache_positions.data_ptr()
+                == results[1].cache_positions.data_ptr()
+                == cache_positions.data_ptr()
+            )
+            assert (
+                results[0].token_to_req_indices.data_ptr()
+                == results[1].token_to_req_indices.data_ptr()
+            )
+            assert results[0].block_table[0, 0].item() == 10
+            assert results[1].block_table[0, 0].item() == 30
+            expected_positions = [0, 1, 2, 3] + (
+                [0] * 4 if empty_rank else [4, 5, 0, 0]
+            )
+            torch.testing.assert_close(
+                results[0].cache_positions,
+                torch.tensor(expected_positions, dtype=torch.int64, device="cuda"),
+                rtol=0,
+                atol=0,
+            )
+            torch.testing.assert_close(
+                results[0].token_to_req_indices,
+                torch.tensor(
+                    [0, 0, 1, 1, 2, 2, 2, 2], dtype=torch.int32, device="cuda"
+                ),
+                rtol=0,
+                atol=0,
+            )
+            snapshots = [
+                (
+                    item.cache_positions.clone(),
+                    item.token_to_req_indices.clone(),
+                    item.block_table.clone(),
+                )
+                for item in results
+            ]
+            reference_builders = [
+                CompressorMetadataBuilder(
+                    spec, [f"reference{i}"], config, torch.device("cuda", rank)
+                )
+                for i in range(2)
+            ]
+            for index, builder in enumerate(reference_builders):
+                cm = common.replace(
+                    block_table_tensor=common.block_table_tensor + index * 20
+                )
+                reference = builder.build(0, cm)
+                torch.testing.assert_close(
+                    reference.cache_positions,
+                    snapshots[index][0],
+                    rtol=0,
+                    atol=0,
+                )
+                torch.testing.assert_close(
+                    reference.token_to_req_indices,
+                    snapshots[index][1],
+                    rtol=0,
+                    atol=0,
+                )
+                torch.testing.assert_close(
+                    reference.block_table, snapshots[index][2], rtol=0, atol=0
+                )
+        finally:
+            cleanup_dist_env_and_memory()
+
+
+@pytest.mark.parametrize("empty_rank", [False, True])
+def test_shared_pcp_metadata_matches_independent_builders(runtime, empty_rank):
+    assert runtime.cuda.device_count() >= 2, (
+        "PCP metadata test requires two visible PPU devices"
+    )
+    import torch.multiprocessing as mp
+    from vllm.utils.network_utils import get_open_port
+
+    mp.spawn(
+        _shared_pcp_metadata_worker,
+        args=(2, get_open_port(), empty_rank),
+        nprocs=2,
+        join=True,
+    )

@@ -54,6 +54,7 @@ class PPUDeepseekSparseSWAMetadataBuilder(DeepseekSparseSWAFlashMLAMetadataBuild
         common_attn_metadata: CommonAttentionMetadata,
         fast_build: bool = False,
         replay_start: torch.Tensor | None = None,
+        pcp_shared_metadata=None,
     ):
         if self.pcp_size <= 1:
             return super().build(
@@ -73,8 +74,12 @@ class PPUDeepseekSparseSWAMetadataBuilder(DeepseekSparseSWAFlashMLAMetadataBuild
         )
         assert local_metadata.positions is not None
         metadata.cache_slot_mapping = global_slot_mapping
-        metadata.cache_positions = get_pcp_group().all_gather(
-            local_metadata.positions.contiguous(), dim=0
+        metadata.cache_positions = (
+            pcp_shared_metadata.get_cache_positions(local_metadata)
+            if pcp_shared_metadata is not None
+            else get_pcp_group().all_gather(
+                local_metadata.positions.contiguous(), dim=0
+            )
         )
         return metadata
 
