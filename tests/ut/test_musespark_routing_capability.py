@@ -154,3 +154,56 @@ def test_registered_router_preserves_fallback_and_preloaded_aliases(
         assert bound["division_eps"] == 1e-6 and bound["route_scale"] == 0.5
         assert bound["USE_PDL"] is False and "launch_pdl" not in options
         assert options["num_warps"] == (1 if experts == 256 else 4)
+
+
+def test_unimportable_provider_skips_with_a_warning(modules, monkeypatch):
+    """An empty vLLM build must skip the patch, not abort ``patch.install()``.
+
+    ``VLLM_TARGET_DEVICE=empty`` leaves ``torch.ops._C`` unclaimed, and importing
+    ``vllm.models.muse_spark`` reads that namespace at module scope, so the provider
+    import raises ``AttributeError``. Registering nothing is the honest outcome
+    there: the native router the patch guards against cannot dispatch either.
+    """
+
+    class ExplodingLoader:
+        def create_module(self, spec):
+            return None
+
+        def exec_module(self, module):
+            raise AttributeError(
+                "'_OpNamespace' '_C' object has no attribute 'rotary_embedding'"
+            )
+
+    class ExplodingFinder:
+        def find_spec(self, fullname, path=None, target=None):
+            if fullname == "vllm.models.muse_spark":
+                return importlib.util.spec_from_loader(fullname, ExplodingLoader())
+            return None
+
+    warnings = []
+    modules("vllm.models")
+    modules(
+        "vllm.logger",
+        init_logger=lambda name: NS(
+            warning=lambda message, *args: warnings.append(message % args)
+        ),
+    )
+    modules("vllm.platforms", current_platform=NS(is_ppu=lambda: False))
+    # An earlier test can leave the real package cached (its fake compiled ops make
+    # the import succeed once), which would bypass the finder below.
+    for cached in [
+        name
+        for name in sys.modules
+        if name == "vllm.models.muse_spark"
+        or name.startswith("vllm.models.muse_spark.")
+    ]:
+        monkeypatch.delitem(sys.modules, cached)
+    monkeypatch.setattr(sys, "meta_path", [ExplodingFinder(), *sys.meta_path])
+
+    patch_module = load_patch(
+        "vllm_sail/patch/enhancement/attention/musespark_routing.py"
+    )
+
+    assert patch_module._unavailable is True
+    assert not hasattr(patch_module, "fused_musespark1x_routing")
+    assert len(warnings) == 1 and "MuseSpark routing patch" in warnings[0]

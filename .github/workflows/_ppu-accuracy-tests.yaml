@@ -38,6 +38,14 @@ on:
         # /ppusw is the developer box mount; the CI runners mount the same NFS
         # export at /nas_aisw/datasets, so the trees repeat one level deeper.
         default: /nas_aisw/datasets/datasets/vision/EvalScope/data/gsm8k/v2/gsm8k
+      dg_cache_dir:
+        description: Host root for the DeepGEMM JIT kernel cache
+        type: string
+        # DeepGEMM JIT-compiles its kernels on first use; keeping the cache on
+        # the host lets a later case -- or a later run -- skip that pass, which
+        # costs a couple of minutes per model. The wrapper appends the runtime
+        # image ID, so this root is shared while the binaries stay per-image.
+        default: /nas_aisw/vllmci_dgcache
 
 permissions:
   contents: read
@@ -161,6 +169,7 @@ jobs:
           PPU_CI_REQUIRE_PR_ARTIFACT: ${{ inputs.pr_mode }}
           PPU_CI_WHEEL_SOURCE_SHA: ${{ inputs.wheel_source_sha || inputs.pr_head_sha || github.sha }}
           PPU_CI_HF_HOME: ${{ inputs.hf_home }}
+          PPU_CI_DG_CACHE_DIR: ${{ inputs.dg_cache_dir }}
           HF_HUB_OFFLINE: "1"
           GSM8K_DATASET_PATH: ${{ inputs.gsm8k_dataset_path }}
           MODEL_KEY: ${{ matrix.model.model_key }}
