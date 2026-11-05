@@ -29,7 +29,7 @@ from vllm.platforms.interface import DeviceCapability, PlatformEnum
 from vllm.v1.attention.backends.registry import AttentionBackendEnum
 
 if TYPE_CHECKING:
-    from vllm.config import VllmConfig
+    from vllm.config import SpeculativeConfig, VllmConfig
     from vllm.v1.attention.backend import AttentionBackend
     from vllm.v1.attention.selector import AttentionSelectorConfig
 
@@ -42,6 +42,36 @@ torch.backends.cuda.enable_cudnn_sdp(False)
 
 def _get_attn_backend_class(backend: AttentionBackendEnum) -> type[AttentionBackend]:
     return backend.get_class()
+
+
+def _retarget_dense_draft_backend(
+    speculative_config: SpeculativeConfig,
+) -> None:
+    """Point a dense MLA draft at PPU's fp8 MLA decoder.
+
+    Upstream's Kimi K3 config hook (``configure_dense_draft``) pins a dense
+    EAGLE3/DSpark MLA draft to ``FLASHINFER_MLA`` on an fp8 KV cache: the draft
+    holds no cache of its own, it keeps plain fp8 rows at the head of the
+    target's merged pages. PPU can honour neither half of that pin -- FlashInfer
+    is absent, and the dense FlashMLA has no FP8 decode path -- so the draft
+    dies in the selector with "compute capability not supported".
+
+    ``TRITON_MLA`` reads the same fp8 rows, dequantizes in-kernel from the
+    layer's ``_k_scale``, takes the real page stride of the cross-layer view and
+    flattens the draft's non-causal block to one decode row per query token.
+    Only the decode backend changes: the KV format, the page binding and
+    ``kv_cache_dtype="fp8"`` stay exactly as upstream set them.
+    """
+    if (
+        speculative_config.attention_backend is AttentionBackendEnum.FLASHINFER_MLA
+        and speculative_config.kv_cache_dtype in ("fp8", "fp8_e4m3")
+    ):
+        logger.info(
+            "Retargeting the dense %s draft from FLASHINFER_MLA (unavailable on "
+            "PPU) to TRITON_MLA; the fp8 KV rows and page binding are unchanged.",
+            speculative_config.method,
+        )
+        speculative_config.attention_backend = AttentionBackendEnum.TRITON_MLA
 
 
 class _BackendCandidate(NamedTuple):
@@ -238,6 +268,11 @@ class PPUPlatform(NvmlCudaPlatform):
             and "+quant_fp8" not in compilation_config.custom_ops
         ):
             compilation_config.custom_ops.append("+quant_fp8")
+
+        # Model config hooks have already run, so a dense MLA draft on a hybrid
+        # (KDA + MLA) DSA target has been pinned to a backend PPU cannot select.
+        if vllm_config.speculative_config is not None:
+            _retarget_dense_draft_backend(vllm_config.speculative_config)
 
     @classmethod
     def is_arch_support_pdl(cls) -> bool:
