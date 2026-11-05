@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """The installed DSA indexer patch resolves PPU auto dtype through its provider."""
 
+import sys
+import types
 from types import SimpleNamespace as NS
 
 import pytest
@@ -24,7 +26,7 @@ def config(value):
 
 
 @pytest.fixture
-def installed_indexer(modules, patch_utils_module):
+def installed_indexer(modules, patch_utils_module, monkeypatch):
     def load(capability, *, ppu=True):
         calls = []
         platform = NS(
@@ -66,9 +68,18 @@ def installed_indexer(modules, patch_utils_module):
             _supports_flattened_device_query_lens=lambda: False,
             DSA_INDEXER_KV_DTYPES=("fp8", "mxfp4"),
         )
+        # Kimi K3.1's ``dsa_cache`` re-exports the helper at module scope, so it
+        # captured upstream's function before this patch could run: the preloaded
+        # alias must be registered as a consumer and rebound by the installed
+        # patch (which is also what puts it in the manifest).
+        dsa_cache = types.ModuleType("vllm.models.kimi_k3.common.dsa_cache")
+        dsa_cache.dsa_indexer_uses_fp4 = upstream
+        monkeypatch.setitem(
+            sys.modules, "vllm.models.kimi_k3.common.dsa_cache", dsa_cache
+        )
         patch = load_patch("vllm_sail/patch/enhancement/attention/mla_indexer.py")
         assert provider.dsa_indexer_uses_fp4 is patch.dsa_indexer_uses_fp4
-        return provider.dsa_indexer_uses_fp4, calls
+        return provider.dsa_indexer_uses_fp4, calls, dsa_cache
 
     return load
 
@@ -86,19 +97,25 @@ def installed_indexer(modules, patch_utils_module):
 def test_indexer_cache_dtype_resolution(
     installed_indexer, capability, configured, expected
 ):
-    uses_fp4, calls = installed_indexer(capability)
+    uses_fp4, calls, _ = installed_indexer(capability)
     assert uses_fp4(config(configured)) is expected
     assert calls == []
 
 
 def test_mxfp4_stays_rejected_below_sm_89(installed_indexer):
-    uses_fp4, _ = installed_indexer(80)
+    uses_fp4, _, _ = installed_indexer(80)
     with pytest.raises(ValueError, match="requires capability sm_89"):
         uses_fp4(config("mxfp4"))
 
 
 def test_non_ppu_delegates_to_upstream(installed_indexer):
-    uses_fp4, calls = installed_indexer(100, ppu=False)
+    uses_fp4, calls, _ = installed_indexer(100, ppu=False)
     value = config("auto")
     assert uses_fp4(value) == "upstream"
     assert calls == [value]
+
+
+def test_preloaded_kimi_consumer_uses_the_provider(installed_indexer):
+    """Kimi K3.1 binds the helper with ``from ... import`` before the patch."""
+    uses_fp4, _, dsa_cache = installed_indexer(89)
+    assert dsa_cache.dsa_indexer_uses_fp4 is uses_fp4

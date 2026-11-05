@@ -36,6 +36,13 @@ helpers, new parameters, refactors) cannot break this plugin.
   keeps the builder on ``_current_builder`` the same way; without it the fp4
   scheduler metadata would be rebuilt with the fp8 layout and fail upstream's
   shape assertion.
+* ``dsa_indexer_uses_fp4`` is rebound on every preloaded model module that
+  captured it with ``from ... import``: those bindings keep pointing at
+  upstream's helper, which silently resolves ``'auto'`` to fp8. On Kimi K3.1
+  the missed consumer was ``vllm.models.kimi_k3.common.dsa_cache``, imported by
+  the ``kda`` patch long before this one, so the whole model kept its FP8
+  indexer cache (132 B/token instead of 68) and its FP8 MQA-logits kernels
+  while this module's builder reported the MXFP4 capability.
 """
 
 from __future__ import annotations
@@ -294,6 +301,13 @@ import sys
 for _consumer_name in (
     "vllm.model_executor.models.deepseek_v2",
     "vllm.models.deepseek_v4.attention",
+    # Kimi K3.1's ``dsa_cache`` is already imported when this module loads: the
+    # ``kda`` patch (installed earlier in ``attention/__init__``) imports
+    # ``vllm.models.kimi_k3``, whose package ``__init__`` imports
+    # ``nvidia.model``, which imports ``common.dsa_cache`` at module scope. Its
+    # name is a ``from ... import`` alias, so this patch's manifest row and lock
+    # fingerprint describe that import statement rather than a definition.
+    "vllm.models.kimi_k3.common.dsa_cache",
 ):
     _consumer = sys.modules.get(_consumer_name)
     if (
