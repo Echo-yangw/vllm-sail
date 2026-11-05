@@ -258,10 +258,10 @@ def ppu_sparse_attn_indexer(
             )
 
     topk_indices_buffer[: hidden_states.shape[0]] = -1
+    prefill_metadata = getattr(attn_metadata_narrowed, "prefill", None)
     if has_prefill:
-        prefill_metadata = attn_metadata_narrowed.prefill
         assert prefill_metadata is not None
-
+    if has_prefill and prefill_metadata.chunks:
         # Get the full shared workspace buffers once (will allocate on first use).
         # Layout switches between FP8 (head_dim bytes + 4-byte fp32 scale) and
         # MXFP4 (head_dim/2 bytes packed + head_dim/MXFP4_BLOCK_SIZE ue8m0

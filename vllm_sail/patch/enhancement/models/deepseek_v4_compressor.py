@@ -11,6 +11,175 @@ from vllm.models.deepseek_v4 import compressor as _compressor
 from vllm_sail.patch.bodies import bind_body
 from vllm_sail.patch.utils import patch
 
+_AFFECTED = ">=0.32.0,<0.33.0"
+_MODULE = "vllm.models.deepseek_v4.compressor"
+
+
+@patch(
+    _MODULE,
+    "CompressorBackend.supports_pcp",
+    allow_missing=True,
+    reason=(
+        "DeepSeek V4 PCP replicates compressor state and compressed KV on PPU, "
+        "so its internal attention backend participates in PCP metadata builds."
+    ),
+    affected_versions=_AFFECTED,
+    remove_when="upstream PR #65305 lands with CompressorBackend.supports_pcp.",
+)
+@classmethod
+def compressor_backend_supports_pcp(cls) -> bool:
+    return _compressor.current_platform.is_ppu()
+
+
+_upstream_metadata_init = _compressor.CompressorMetadataBuilder.__init__
+_upstream_metadata_build = _compressor.CompressorMetadataBuilder.build
+
+
+def _compressor_metadata_init(self, *args, **kwargs) -> None:
+    _upstream_metadata_init(self, *args, **kwargs)
+    self._ppu_pcp_size = self.vllm_config.parallel_config.prefill_context_parallel_size
+    if not _compressor.current_platform.is_ppu() or self._ppu_pcp_size <= 1:
+        return
+    max_tokens = self.vllm_config.scheduler_config.max_num_batched_tokens
+    max_reqs = 2 * self.vllm_config.scheduler_config.max_num_seqs
+    self._ppu_pcp_local_req_indices = _compressor.torch.empty(
+        max_tokens, dtype=_compressor.torch.int32, device=self.device
+    )
+    self._ppu_pcp_token_to_req_indices = _compressor.torch.empty(
+        max_tokens * self._ppu_pcp_size,
+        dtype=_compressor.torch.int32,
+        device=self.device,
+    )
+    self._ppu_pcp_positions = _compressor.torch.empty(
+        max_tokens * self._ppu_pcp_size,
+        dtype=_compressor.torch.int64,
+        device=self.device,
+    )
+    self._ppu_pcp_local_block_table = None
+    self._ppu_pcp_block_table = None
+    self._ppu_pcp_max_reqs = max_reqs
+
+
+def _gather_compressor_metadata(self, metadata, common_attn_metadata) -> None:
+    from vllm.distributed import get_pcp_group
+
+    group = get_pcp_group()
+    pcp_size = self._ppu_pcp_size
+    local_tokens = metadata.slot_mapping.numel() // pcp_size
+    local_num_reqs = _compressor.torch.tensor(
+        [common_attn_metadata.num_reqs],
+        dtype=_compressor.torch.int32,
+        device=self.device,
+    )
+    gather_num_reqs = max(
+        1, int(group.all_gather(local_num_reqs, dim=0).max().item())
+    )
+    assert gather_num_reqs <= self._ppu_pcp_max_reqs
+
+    block_table_width = metadata.block_table.shape[1]
+    if self._ppu_pcp_local_block_table is None:
+        self._ppu_pcp_local_block_table = _compressor.torch.empty(
+            (self._ppu_pcp_max_reqs, block_table_width),
+            dtype=_compressor.torch.int32,
+            device=self.device,
+        )
+        self._ppu_pcp_block_table = _compressor.torch.empty(
+            (self._ppu_pcp_max_reqs * pcp_size, block_table_width),
+            dtype=_compressor.torch.int32,
+            device=self.device,
+        )
+    local_block_table = self._ppu_pcp_local_block_table[:gather_num_reqs]
+    local_block_table.zero_()
+    local_block_table[: common_attn_metadata.num_reqs].copy_(
+        metadata.block_table[: common_attn_metadata.num_reqs]
+    )
+    gathered_block_table = group.all_gather(local_block_table, dim=0)
+    pcp_block_table = self._ppu_pcp_block_table[: gather_num_reqs * pcp_size]
+    pcp_block_table.copy_(gathered_block_table).clamp_(min=0)
+
+    assert metadata.token_to_req_indices is not None
+    local_req_indices = self._ppu_pcp_local_req_indices[:local_tokens]
+    local_req_indices.zero_()
+    local_req_indices[: common_attn_metadata.num_actual_tokens].copy_(
+        metadata.token_to_req_indices
+    )
+    local_req_indices += group.rank_in_group * gather_num_reqs
+    num_tokens = local_tokens * pcp_size
+    pcp_req_indices = self._ppu_pcp_token_to_req_indices[:num_tokens]
+    pcp_req_indices.copy_(group.all_gather(local_req_indices, dim=0))
+
+    assert common_attn_metadata.positions is not None
+    pcp_positions = self._ppu_pcp_positions[:num_tokens]
+    pcp_positions.copy_(
+        group.all_gather(common_attn_metadata.positions.contiguous(), dim=0)
+    )
+    metadata.block_table = pcp_block_table
+    metadata.token_to_req_indices = pcp_req_indices
+    metadata.cache_positions = pcp_positions
+    metadata.num_decode_tokens = None
+    metadata.c128_boundary = None
+
+
+@patch(
+    _MODULE,
+    "CompressorMetadataBuilder.__init__",
+    reason=(
+        "PPU DeepSeek V4 PCP needs persistent buffers for rank-major compressor "
+        "request, position, and block-table metadata."
+    ),
+    affected_versions=_AFFECTED,
+    remove_when="upstream PR #65305 lands with PCP compressor metadata buffers.",
+)
+def compressor_metadata_init(self, *args, **kwargs) -> None:
+    _compressor_metadata_init(self, *args, **kwargs)
+
+
+@patch(
+    _MODULE,
+    "CompressorMetadataBuilder.build",
+    reason=(
+        "PPU DeepSeek V4 PCP pools C4/C128 states over rank-major gathered rows, "
+        "which requires uniform request tables and global cache positions."
+    ),
+    affected_versions=_AFFECTED,
+    remove_when="upstream PR #65305 lands with PCP compressor metadata gathering.",
+)
+def compressor_metadata_build(
+    self, common_prefix_len, common_attn_metadata, fast_build=False
+):
+    metadata = _upstream_metadata_build(
+        self, common_prefix_len, common_attn_metadata, fast_build
+    )
+    if _compressor.current_platform.is_ppu() and self._ppu_pcp_size > 1:
+        _gather_compressor_metadata(self, metadata, common_attn_metadata)
+    return metadata
+
+
+_upstream_forward = _compressor.DeepseekCompressor.forward
+
+
+@patch(
+    _MODULE,
+    "DeepseekCompressor.forward",
+    reason=(
+        "PPU DeepSeek V4 PCP must gather raw KV and score rows before writing "
+        "partial states and pooling across C4/C128 shard boundaries."
+    ),
+    affected_versions=_AFFECTED,
+    remove_when="upstream PR #65305 lands with PCP compressor input gathering.",
+)
+def compressor_forward(self, kv_score, positions, rotary_emb) -> None:
+    attn_metadata = _compressor.get_forward_context().attn_metadata
+    if isinstance(attn_metadata, dict):
+        state_metadata = attn_metadata[self.state_cache.prefix]
+        cache_positions = getattr(state_metadata, "cache_positions", None)
+        if cache_positions is not None:
+            from vllm.distributed import get_pcp_group
+
+            kv_score = get_pcp_group().all_gather(kv_score.contiguous(), dim=0)
+            positions = cache_positions
+    _upstream_forward(self, kv_score, positions, rotary_emb)
+
 
 # fmt: off
 def __init__(

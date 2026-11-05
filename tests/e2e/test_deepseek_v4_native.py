@@ -256,3 +256,56 @@ def test_qnorm_rope_cache_insert(runtime, mode, tokens):
             cache[..., :448].float(), expected[..., :448], rtol=0, atol=0
         )
     torch.testing.assert_close(kv, kv_original, rtol=0, atol=0)
+
+
+def test_qnorm_rope_cache_insert_supports_split_pcp_writes(runtime):
+    torch = runtime
+    tokens, heads, padded_heads, block_size = 17, 16, 32, 16
+    generator = torch.Generator(device="cuda").manual_seed(19)
+    q = torch.randn(
+        tokens, heads, 512, device="cuda", dtype=torch.bfloat16, generator=generator
+    )
+    kv = torch.randn(
+        tokens, 512, device="cuda", dtype=torch.bfloat16, generator=generator
+    )
+    positions = torch.arange(tokens, device="cuda", dtype=torch.int64)
+    frequency = 10000.0 ** (-torch.arange(0, 64, 2, device="cuda").float() / 64)
+    angles = torch.arange(tokens, device="cuda").float()[:, None] * frequency
+    rope_cache = torch.cat((angles.cos(), angles.sin()), dim=-1)
+    slots = torch.arange(tokens, device="cuda", dtype=torch.int64)
+    slots[3::5] = -1
+    cache = torch.full((2, block_size * 584), 93, device="cuda", dtype=torch.uint8)
+
+    kv_only = torch.ops._C.fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert(
+        kv.unsqueeze(1).contiguous(),
+        kv,
+        cache,
+        slots,
+        positions,
+        rope_cache,
+        0,
+        1e-6,
+        block_size,
+        apply_q_norm=False,
+        apply_q_rope=False,
+    )
+    torch.cuda.synchronize()
+    assert kv_only.numel() == 0
+    assert bool((cache != 93).any())
+
+    written = cache.clone()
+    q_only = torch.ops._C.fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert(
+        q,
+        kv,
+        cache,
+        slots[:0],
+        positions,
+        rope_cache,
+        padded_heads,
+        1e-6,
+        block_size,
+    )
+    torch.cuda.synchronize()
+    assert q_only.shape == (tokens, padded_heads, 512)
+    assert bool(torch.isfinite(q_only).all())
+    torch.testing.assert_close(cache, written, rtol=0, atol=0)

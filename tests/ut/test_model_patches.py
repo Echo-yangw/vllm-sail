@@ -224,6 +224,11 @@ _EXPECTED_TARGETS = {
     "vllm.model_executor.models.deepseek_mtp.DeepSeekMTP.__init__",
     "vllm.model_executor.models.deepseek_mtp.DeepSeekMTP.load_weights",
     "vllm.models.deepseek_v4.nvidia.model._select_dsv4_attn_cls",
+    "vllm.model_executor.layers.fused_moe.runner.moe_runner.MoERunner._apply_quant_method",
+    "vllm.models.deepseek_v4.compressor.CompressorBackend.supports_pcp",
+    "vllm.models.deepseek_v4.compressor.CompressorMetadataBuilder.__init__",
+    "vllm.models.deepseek_v4.compressor.CompressorMetadataBuilder.build",
+    "vllm.models.deepseek_v4.compressor.DeepseekCompressor.forward",
     (
         "vllm.models.kimi_k3.nvidia.latent_moe_runner.LatentMoERunner."
         "_overlap_allreduce_tail"

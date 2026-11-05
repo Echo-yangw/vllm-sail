@@ -45,6 +45,28 @@ def installed(monkeypatch, patch_utils_module):
     )
     module("torch", float32="float32", bfloat16="bfloat16")
     module("vllm.platforms", current_platform=platform)
+    module(
+        "vllm.distributed",
+        get_pcp_group=lambda: types.SimpleNamespace(
+            all_gather=lambda value, dim: value
+        ),
+    )
+
+    class MoERunner:
+        def _apply_quant_method(self, *args, **kwargs):
+            return args, kwargs
+
+    module(
+        "vllm.model_executor.layers.fused_moe.runner.moe_runner",
+        MoERunner=MoERunner,
+    )
+    module(
+        "vllm.v1.attention.backends.registry",
+        AttentionBackendEnum=types.SimpleNamespace(
+            FLASHMLA_SPARSE="flashmla",
+            FLASHMLA_SPARSE_DSV4="flashmla_dsv4",
+        ),
+    )
     attention_cls = type("Attention", (), {})
     module(f"{BASE}.nvidia.flashmla", DeepseekV4FlashMLAAttention=attention_cls)
     module(f"{BASE}.nvidia.model", _select_dsv4_attn_cls=lambda _: attention_cls)

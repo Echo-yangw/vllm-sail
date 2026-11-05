@@ -9,7 +9,8 @@ FP8 channelwise dense + FP4 MoE mixed-precision).
 
 import re
 
-from vllm.config import VllmConfig
+from vllm.config import CUDAGraphMode, VllmConfig
+from vllm.config.kernel import MEGA_MOE_BACKENDS
 from vllm.model_executor.models.utils import WeightsMapper
 from vllm.models.deepseek_v4.nvidia.model import (
     DeepseekV4ForCausalLM as NvidiaDeepseekV4ForCausalLM,
@@ -72,6 +73,37 @@ def _make_deepseek_v4_weights_mapper(
     )
 
 
+def _validate_pcp_config(vllm_config: VllmConfig) -> None:
+    parallel_config = vllm_config.parallel_config
+    if parallel_config.prefill_context_parallel_size <= 1:
+        return
+    unsupported = (
+        parallel_config.decode_context_parallel_size != 1
+        or parallel_config.pipeline_parallel_size != 1
+        or parallel_config.data_parallel_size != 1
+        or parallel_config.nnodes != 1
+        or parallel_config.use_ubatching
+        or vllm_config.speculative_config is not None
+        or vllm_config.kv_transfer_config is not None
+        or vllm_config.cache_config.enable_prefix_caching
+        or vllm_config.kernel_config.moe_backend in MEGA_MOE_BACKENDS
+    )
+    if unsupported:
+        raise NotImplementedError(
+            "DeepSeek V4 PCP on PPU requires one node, DCP=PP=DP=1, no "
+            "prefix caching, speculation, KV transfer, microbatching, or MegaMoE."
+        )
+    if vllm_config.compilation_config.cudagraph_mode != CUDAGraphMode.NONE:
+        raise NotImplementedError(
+            "DeepSeek V4 PCP on PPU requires -cc.cudagraph_mode=NONE."
+        )
+    cache_dtype = str(vllm_config.cache_config.cache_dtype)
+    if cache_dtype != "auto" and not cache_dtype.startswith("fp8"):
+        raise NotImplementedError(
+            "DeepSeek V4 PCP on PPU requires an FP8 DeepSeek MLA KV cache."
+        )
+
+
 class DeepseekV4ForCausalLM(NvidiaDeepseekV4ForCausalLM):
     """PPU-specific DeepSeek V4 model.
 
@@ -87,6 +119,7 @@ class DeepseekV4ForCausalLM(NvidiaDeepseekV4ForCausalLM):
     }
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
+        _validate_pcp_config(vllm_config)
         config = vllm_config.model_config.hf_config
         expert_dtype = getattr(config, "expert_dtype", "fp4")
 

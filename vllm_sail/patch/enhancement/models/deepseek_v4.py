@@ -6,10 +6,13 @@ from __future__ import annotations
 import sys
 
 import torch
+from vllm.distributed import get_pcp_group
+from vllm.model_executor.layers.fused_moe.runner import moe_runner as _moe_runner
 from vllm.models.deepseek_v4.nvidia.flashmla import (
     DeepseekV4FlashMLAAttention as NvidiaDeepseekV4FlashMLAAttention,
 )
 from vllm.platforms import current_platform
+from vllm.v1.attention.backends.registry import AttentionBackendEnum
 
 from vllm_sail.models.deepseek_v4.flashmla import (
     DeepseekV4FlashMLAAttention as PPUDeepseekV4FlashMLAAttention,
@@ -38,10 +41,64 @@ _SELECTOR_TARGET = "vllm.models.deepseek_v4.nvidia.model._select_dsv4_attn_cls"
 )
 def _select_dsv4_attn_cls(vllm_config):
     original = getattr(_select_dsv4_attn_cls, PATCH_MARKER)[_SELECTOR_TARGET]
+    parallel_config = getattr(vllm_config, "parallel_config", None)
+    use_pcp = (
+        parallel_config is not None
+        and parallel_config.prefill_context_parallel_size > 1
+    )
+    if current_platform.is_ppu() and use_pcp:
+        backend = vllm_config.attention_config.backend
+        if backend not in (
+            None,
+            AttentionBackendEnum.FLASHMLA_SPARSE,
+            AttentionBackendEnum.FLASHMLA_SPARSE_DSV4,
+        ):
+            raise NotImplementedError(
+                "DeepSeek V4 PCP on PPU requires FlashMLA sparse attention."
+            )
+        return PPUDeepseekV4FlashMLAAttention
     selected = original(vllm_config)
     if current_platform.is_ppu() and selected is NvidiaDeepseekV4FlashMLAAttention:
         return PPUDeepseekV4FlashMLAAttention
     return selected
+
+
+_upstream_apply_quant_method = _moe_runner.MoERunner._apply_quant_method
+
+
+@patch(
+    "vllm.model_executor.layers.fused_moe.runner.moe_runner",
+    "MoERunner._apply_quant_method",
+    reason=(
+        "PCP gathers routed activations and logits before expert selection; "
+        "DeepSeek V4 hash routing needs input_ids in the same rank-major order."
+    ),
+    affected_versions=_AFFECTED,
+    remove_when="upstream PR #65305 lands with PCP input_ids gathering in MoERunner.",
+)
+def _apply_quant_method(
+    self,
+    hidden_states,
+    router_logits,
+    shared_experts_input,
+    input_ids=None,
+    shared_experts_overlapping=False,
+):
+    if (
+        current_platform.is_ppu()
+        and self.moe_config.pcp_size > 1
+        and not self.moe_config.moe_parallel_config.use_all2all_kernels
+        and input_ids is not None
+    ):
+        input_ids = get_pcp_group().all_gather(input_ids.contiguous(), dim=0)
+    return _upstream_apply_quant_method(
+        self,
+        hidden_states,
+        router_logits,
+        shared_experts_input,
+        input_ids,
+        shared_experts_overlapping,
+    )
 
 
 _Q_MODULE = "vllm.models.deepseek_v4.common.ops.fused_indexer_q"

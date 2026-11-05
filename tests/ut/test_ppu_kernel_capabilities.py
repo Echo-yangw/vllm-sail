@@ -260,6 +260,15 @@ def test_compressor_uses_supported_kernel(modules, ppu, head, two_stage, expecte
     module = modules(
         f"{base}.compressor",
         DeepseekCompressor=cls,
+        CompressorBackend=type("CompressorBackend", (), {}),
+        CompressorMetadataBuilder=type(
+            "CompressorMetadataBuilder",
+            (),
+            {
+                "__init__": lambda self, *args, **kwargs: None,
+                "build": lambda self, *args, **kwargs: object(),
+            },
+        ),
         current_platform=platform,
         get_forward_context=lambda: context,
         cast=lambda kind, value: value,
@@ -312,8 +321,11 @@ def test_compressor_uses_supported_kernel(modules, ppu, head, two_stage, expecte
     obj.forward(scores, object(), types.SimpleNamespace(cos_sin_cache=object()))
     assert [name for name, _ in calls] == ["save", expected]
     assert ("store_full_kv" in calls[-1][1]) == (expected == "cute")
-    assert obj.forward.__func__.__globals__ is module.__dict__
-    assert obj.forward.__func__ is original_forward
+    marker = obj.forward.__func__.__vllm_sail_patch__
+    assert (
+        marker["vllm.models.deepseek_v4.compressor.DeepseekCompressor.forward"]
+        is original_forward
+    )
     assert obj._compress_norm_rope_store.__func__.__globals__ is module.__dict__
     # Non-boundary C128 steps still save partial state, except full graph capture.
     if not two_stage and head == 512:
@@ -355,6 +367,15 @@ def test_compressor_constructor_registers_supported_warmup(
     provider = modules(
         f"{base}.compressor",
         DeepseekCompressor=cls,
+        CompressorBackend=type("CompressorBackend", (), {}),
+        CompressorMetadataBuilder=type(
+            "CompressorMetadataBuilder",
+            (),
+            {
+                "__init__": lambda self, *args, **kwargs: None,
+                "build": lambda self, *args, **kwargs: object(),
+            },
+        ),
         current_platform=types.SimpleNamespace(
             device_type="cuda", is_cuda=lambda: True, is_ppu=lambda: ppu
         ),
