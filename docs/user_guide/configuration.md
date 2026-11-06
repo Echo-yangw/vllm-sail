@@ -36,6 +36,7 @@ application in the allowlist.
 | `VLLM_SAIL_DEEPGEMM_MOE_FUSED_ACT_QUANT` | `0` | Fuse the activation and the second MoE GEMM's input quantization into DeepGEMM's SiLU/SiTU kernel for the FP8 and MXFP4 experts; the BF16 (w4a16 or unquantized) experts use its values-only kernel, which also replaces the standalone `vllm::silu_and_mul` / `vllm::situ_and_mul` that unquantized BF16 dense MLPs and shared experts run on |
 | `VLLM_SAIL_USE_PLA` | `1` | Allow PLA linear-attention paths where available |
 | `VLLM_GDN_DECODE_KERNEL` | `auto` on PPU | `auto`, `cuda`, `pla`, `triton`; selects GDN decode independently of prefill and KDA |
+| `VLLM_SAIL_QSA_KERNEL` | `auto` on PPU | `auto`, `cuda`, `triton`; selects the Qwen4Exp QSA sparse-attention kernel |
 | `VLLM_SAIL_FUSED_RMSNORM_QUANT` | `0` | Enable supported fused RMSNorm and quantization paths |
 | `VLLM_SAIL_USE_OPT_TOKEN_GROUP_QUANT` | `0` | Enable the optimized token-group quantization path |
 | `VLLM_SAIL_USE_TRITON_INT8_QUANT` | `1` | Use Triton dynamic per-token INT8 quantization |
@@ -65,6 +66,22 @@ a real CUDA dispatch implementation, not just an operation schema or an
 unsupported-op stub. Its fused MTP kernel applies only to eligible batches;
 other batches use the existing Triton path. The new HGGC port still requires
 native build and device correctness verification before deployment.
+
+On PPU, Qwen4Exp QSA (query-sparse attention) `auto` selects FA3's QSA kernel
+when every gate passes and otherwise keeps the upstream Triton kernel, logging
+the reason once per distinct decision. The gates are: a BF16 main KV cache
+(FA3's QSA path rejects FP8 outright), head dimension 256, at most 32 query
+heads per KV head, and a `flash_attn_3` build whose QSA entry point carries the
+`qsa_allow_aiu` argument and passes a numerical self-test. `cuda` and `triton`
+pin either side for A/B measurement; an explicit `cuda` that fails a gate raises
+at layer construction rather than falling back silently. Selection is per layer,
+so a model whose layers disagree on KV-cache dtype resolves each independently.
+
+Note that FA3's hand-tuned QSA kernels require one KV head per rank under the
+interleaved KV-cache layout this pin allocates. Zhenwu M890 reaches a tuned
+kernel only at tensor-parallel size 2; other sizes, including tensor-parallel
+size 1, run FA3's QSA-aware generic kernel. Correctness is unaffected. Use
+`triton` to compare against the Triton kernel on your own shape.
 
 ## Compatibility controls
 
