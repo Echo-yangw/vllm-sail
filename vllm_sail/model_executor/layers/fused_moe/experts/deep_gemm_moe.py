@@ -66,6 +66,8 @@ from vllm_sail.utils.deep_gemm import (
     m_grouped_bf16_gemm_nt_nopad,
     m_grouped_fp4_gemm_nt_fused,
     m_grouped_fp4_gemm_nt_nopad,
+    m_grouped_fp8_fp4_gemm_nt_fused,
+    m_grouped_fp8_fp4_gemm_nt_nopad,
     m_grouped_fp8_gemm_nt_nopad,
     m_grouped_int8_gemm_nt_nopad,
     m_grouped_w4a16_gemm_nt_fused,
@@ -799,7 +801,7 @@ class PPUDeepGemmExpertsW4FA16MMA(PPUDeepGemmExperts):
 
             # calculate expert_first_token_offset for deepgemm
             experts_for_rows = torch.zeros(
-                local_num_experts, dtype=torch.int32, device="cuda"
+                local_num_experts, dtype=torch.int32, device=a1q.device
             )
             counts = expert_num_tokens
             min_n = min(counts.size(0), local_num_experts)
@@ -1092,7 +1094,7 @@ class PPUDeepGemmExpertsMXFP4(mk.FusedMoEExpertsModular):
 
             # calculate expert_first_token_offset for deepgemm
             experts_for_rows = torch.zeros(
-                local_num_experts, dtype=torch.int32, device="cuda"
+                local_num_experts, dtype=torch.int32, device=a1q.device
             )
             counts = expert_num_tokens
             min_n = min(counts.size(0), local_num_experts)
@@ -1172,6 +1174,306 @@ class PPUDeepGemmExpertsMXFP4(mk.FusedMoEExpertsModular):
 
         if nvtx_pushed:
             th_nvtx_range_pop()
+
+        deepgemm_unpermute_and_reduce(
+            a=mm2_out,
+            topk_ids=topk_ids,
+            topk_weights=topk_weights,
+            inv_perm=inv_perm,
+            expert_map=expert_map,
+            output=output,
+        )
+
+class PPUDeepGemmExpertsMXFP4W4A8(mk.FusedMoEExpertsModular):
+    """PPU DeepGEMM fused MoE experts for MXFP4 weights with FP8 activations.
+
+    W4A8: weights are packed MXFP4 (uint8, [E, N, K/2]) preprocessed by
+    `deep_gemm.preprocess_weights_and_scales(W4A8_MXFP4_MMA, ...)` at load
+    time; activations are per-token FP8. The weight-preprocessing inverse
+    scales (`w13_inv_scale` / `w2_inv_scale`) are handed to the W4A8 GEMMs as
+    their `inv_scale`, which applies each exactly once inside the kernel and
+    keeps the activation row scales plain (`amax / 448`).
+    """
+
+    def __init__(self, moe_config: FusedMoEConfig, quant_config: FusedMoEQuantConfig):
+        super().__init__(moe_config=moe_config, quant_config=quant_config)
+        self.gemm1_clamp_limit = self.activation_config.clamp_limit
+        self.gemm1_alpha = self.activation_config.alpha
+        self.gemm1_beta = self.activation_config.beta
+        # Attached by the patched make_mxfp4_moe_quant_config; default to 1.0
+        # when the quant config predates the w4a8 plumbing.
+        self.w13_inv_scale = float(getattr(quant_config, "w13_inv_scale", 1.0))
+        self.w2_inv_scale = float(getattr(quant_config, "w2_inv_scale", 1.0))
+
+    @staticmethod
+    def activation_format() -> mk.FusedMoEActivationFormat:
+        return mk.FusedMoEActivationFormat.Standard
+
+    @staticmethod
+    def _supports_current_device() -> bool:
+        # W4A8-MXFP4-MMA requires sm90+ on PPU; disable on sm80. The fused
+        # activation+quant kernel that A2 depends on only exists on PPU 1.5.
+        if current_platform.is_device_capability((8, 0)):
+            return False
+        return is_deep_gemm_supported() and has_fused_act_quant() and is_ppu_15()
+
+    @staticmethod
+    def _supports_no_act_and_mul() -> bool:
+        return False
+
+    @staticmethod
+    def _supports_quant_scheme(
+        weight_key: QuantKey | None,
+        activation_key: QuantKey | None,
+    ) -> bool:
+        SUPPORTED_W_A = [
+            (kMxfp4Static, kFp8DynamicTokenSym),
+        ]
+        return (weight_key, activation_key) in SUPPORTED_W_A
+
+    @staticmethod
+    def _supports_activation(activation: MoEActivation) -> bool:
+        # Only the activations DeepGEMM's fused activation+quant kernel
+        # implements: there is no unfused A2 path for W4A8.
+        return activation in [
+            MoEActivation.SILU,
+            MoEActivation.SWIGLUSTEP,
+            MoEActivation.SITU,
+        ]
+
+    @staticmethod
+    def _supports_parallel_config(moe_parallel_config: FusedMoEParallelConfig) -> bool:
+        return not (
+            moe_parallel_config.use_fi_nvl_two_sided_kernels
+            or moe_parallel_config.use_fi_nvl_one_sided_kernels
+        )
+
+    @staticmethod
+    def _supports_bias() -> bool:
+        return False
+
+    def supports_expert_map(self) -> bool:
+        return True
+
+    def finalize_weight_and_reduce_impl(self) -> mk.TopKWeightAndReduce:
+        return TopKWeightAndReduceNoOP()
+
+    def moe_problem_size(
+        self,
+        a1: torch.Tensor,
+        w1: torch.Tensor,
+        w2: torch.Tensor,
+        topk_ids: torch.Tensor,
+    ) -> tuple[int, int, int, int, int]:
+        # w1 is [E, N, K/2] packed MXFP4; report the logical K so the
+        # upstream pipeline sizes the A1 buffers correctly.
+        E, N, K_half = w1.size()
+        return E, a1.size(0), N, K_half * 2, topk_ids.size(1)
+
+    def workspace_shapes(
+        self,
+        M: int,
+        N: int,
+        K: int,
+        topk: int,
+        global_num_experts: int,
+        local_num_experts: int,
+        expert_tokens_meta: mk.ExpertTokensMetadata | None,
+        activation: MoEActivation,
+    ) -> tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...]]:
+        # Per-token activations: no M-block alignment requirement.
+        M_sum = compute_aligned_M(
+            M, topk, local_num_experts, 1, expert_tokens_meta
+        )
+        activation_out_dim = self.adjust_N_for_activation(N, activation)
+        workspace1 = (M_sum, max(activation_out_dim, K))
+        workspace2 = (M_sum, max(N, K))
+        output = (M, K)
+        return (workspace1, workspace2, output)
+
+    def _act_mul_quant_fp8_channel(
+        self, input: torch.Tensor, activation: MoEActivation
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Activation+mul with fused per-token FP8 quant (A2 of W4A8).
+
+        Returns ``(a2q, a2q_scale)`` with plain `amax / 448` row-major [M, 1]
+        scales; GEMM2 applies `w2_inv_scale` through its own `inv_scale`.
+
+        There is deliberately no unfused fallback for W4A8: the activation, the
+        gate*up multiply and the quantization all have to come from DeepGEMM, so
+        an unsupported build/activation/device is a hard error instead of a
+        silent (much slower and differently rounded) two-step path.
+        """
+        if not (has_fused_act_quant() and is_ppu_15()):
+            raise RuntimeError(
+                "PPUDeepGemmExpertsMXFP4W4A8 requires DeepGEMM's fused "
+                "activation+quant kernels on PPU 1.5, but the installed "
+                "deep_gemm build does not expose them"
+            )
+        if input.dtype != torch.bfloat16 or not input.is_contiguous():
+            raise RuntimeError(
+                "PPUDeepGemmExpertsMXFP4W4A8 fused activation+quant needs a "
+                f"contiguous BF16 gate/up buffer, got dtype={input.dtype}, "
+                f"shape={tuple(input.shape)}, contiguous={input.is_contiguous()}"
+            )
+
+        fused = _deepgemm_act_mul(
+            input,
+            activation,
+            get_quant_mode().FP8_CHANNEL,
+            self.activation_config,
+        )
+        if fused is None:
+            raise ValueError(
+                f"Activation {activation} is not supported by DeepGEMM's fused "
+                "activation+quant kernel; PPUDeepGemmExpertsMXFP4W4A8 has no "
+                "unfused fallback"
+            )
+        return fused
+
+    def apply(
+        self,
+        output: torch.Tensor,
+        hidden_states: torch.Tensor,
+        w1: torch.Tensor,
+        w2: torch.Tensor,
+        topk_weights: torch.Tensor,
+        topk_ids: torch.Tensor,
+        activation: MoEActivation,
+        global_num_experts: int,
+        expert_map: torch.Tensor | None,
+        a1q_scale: torch.Tensor | None,
+        a2_scale: torch.Tensor | None,
+        workspace13: torch.Tensor,
+        workspace2: torch.Tensor,
+        expert_tokens_meta: mk.ExpertTokensMetadata | None,
+        apply_router_weight_on_input: bool,
+    ):
+        assert self.quant_config.quant_dtype == current_platform.fp8_dtype()
+        assert a1q_scale is not None
+
+        a1q = hidden_states
+        E, N, K_half = w1.size()
+        K = K_half * 2
+        assert w2.size(1) == K
+
+        local_num_experts = w1.size(0)
+        if global_num_experts == -1:
+            global_num_experts = local_num_experts
+
+        M_sum = compute_aligned_M(
+            M=topk_ids.size(0),
+            num_topk=topk_ids.size(1),
+            local_num_experts=local_num_experts,
+            alignment=1,
+            expert_tokens_meta=expert_tokens_meta,
+        )
+
+        mm1_out = _resize_cache(workspace2, (M_sum, N))
+
+        use_fused_path = (
+            ppu_envs.VLLM_SAIL_DEEPGEMM_MOE_TP_FUSED
+            and expert_map is None
+            and self.quant_config._w1.bias is None
+            and self.quant_config._w2.bias is None
+            and K % 16 == 0
+            and N % 2 == 0
+            and a1q.is_contiguous()
+        )
+
+        if use_fused_path:
+            # ── fused path: moe_align + GEMM1 fused (gather read) ──
+            logger.info_once("Using PPU DeepGEMM fused moe (w4a8).")
+            (
+                configs_list,
+                m_rows,
+                expert_ids_and_cumsum,
+                sorted_token_ids,
+                aligned_num_m_blocks,
+                inv_perm,
+                expert_ids,
+            ) = moe_align_block_size(
+                a1q,
+                w1,
+                topk_ids,
+                perchannel_quant=False,
+            )
+            experts_for_rows = m_rows
+            expert_num_tokens = m_rows
+            inv_perm = inv_perm.view(topk_ids.size(0), topk_ids.size(1))
+            a1q_scale = a1q_scale.contiguous()
+
+            m_grouped_fp8_fp4_gemm_nt_fused(
+                (a1q, a1q_scale),
+                (w1, self.w1_scale),
+                mm1_out,
+                m_rows,
+                expert_ids_and_cumsum,
+                sorted_token_ids,
+                aligned_num_m_blocks,
+                configs_list,
+                inv_scale=self.w13_inv_scale,
+            )
+        else:
+            # ── nopad path: deepgemm_moe_permute + GEMM1 nopad ──
+            a1q_perm = _resize_cache(
+                workspace13.view(dtype=a1q.dtype), (M_sum, K)
+            )
+            a1q, a1q_scale, expert_ids, inv_perm, expert_num_tokens = (
+                deepgemm_moe_permute(
+                    aq=a1q,
+                    aq_scale=a1q_scale,
+                    topk_ids=topk_ids,
+                    local_num_experts=local_num_experts,
+                    expert_map=expert_map,
+                    expert_tokens_meta=expert_tokens_meta,
+                    aq_out=a1q_perm,
+                    is_block_wise_quant=False,
+                    is_channel_wise_quant=True,
+                )
+            )
+            assert a1q.size(0) == M_sum
+
+            # calculate expert_first_token_offset for deepgemm
+            experts_for_rows = torch.zeros(
+                local_num_experts, dtype=torch.int32, device=a1q.device
+            )
+            counts = expert_num_tokens
+            min_n = min(counts.size(0), local_num_experts)
+            if min_n > 0:
+                experts_for_rows[:min_n] = counts[:min_n]
+
+            m_grouped_fp8_fp4_gemm_nt_nopad(
+                (a1q, a1q_scale),
+                (w1, self.w1_scale),
+                mm1_out,
+                expert_ids,
+                experts_for_rows,
+                inv_scale=self.w13_inv_scale,
+            )
+
+        a2q, a2q_scale = self._act_mul_quant_fp8_channel(
+            input=mm1_out.view(-1, N), activation=activation
+        )
+
+        # GEMM2 contracts over the (possibly 128-padded) packed K; pad the
+        # activation with zero codes (zero * anything = 0 contribution).
+        down_k = w2.size(2) * 2
+        if a2q.size(-1) != down_k:
+            a2q = torch.nn.functional.pad(a2q, (0, down_k - a2q.size(-1)))
+
+        mm2_out = _resize_cache(workspace2, (M_sum, K))
+        m_grouped_fp8_fp4_gemm_nt_nopad(
+            (a2q, a2q_scale),
+            (w2, self.w2_scale),
+            mm2_out,
+            expert_ids,
+            experts_for_rows,
+            inv_scale=self.w2_inv_scale,
+        )
+
+        if apply_router_weight_on_input:
+            assert topk_weights is not None
 
         deepgemm_unpermute_and_reduce(
             a=mm2_out,

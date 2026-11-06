@@ -7,6 +7,9 @@ import vllm.model_executor.layers.fused_moe.modular_kernel as mk
 from vllm.config.kernel import MoEBackend
 from vllm.model_executor.layers.fused_moe.oracle import mxfp4 as oracle
 from vllm.model_executor.layers.quantization.utils.quant_utils import QuantKey
+from vllm.model_executor.layers.quantization.utils.quant_utils import (
+    kFp8DynamicTokenSym,
+)
 
 from vllm_sail.patch.utils import patch
 from vllm_sail.registry.moe_backends._extend import extend_enum
@@ -19,29 +22,43 @@ _REMOVE_WHEN = (
 )
 
 Mxfp4MoeBackend = oracle.Mxfp4MoeBackend
-extend_enum(Mxfp4MoeBackend, "PPU_DEEPGEMM_MXFP4", "PPU_DEEPGEMM_MXFP4")
-extend_enum(
-    Mxfp4MoeBackend,
+# PPU members of the upstream enum. Names follow the oracle's
+# "<family>_MXFP4_<activation>" convention (compare AITER_MXFP4_FP8); the order
+# below is the auto-candidate order, so the W4A4 pair stays first.
+_PPU_BACKEND_NAMES = (
+    "PPU_DEEPGEMM_MXFP4",
     "BATCHED_PPU_DEEPGEMM_MXFP4",
-    "BATCHED_PPU_DEEPGEMM_MXFP4",
-)
-
-for _name in (
-    "PPU_DEEPGEMM_MXFP4_BF16",
-    "BATCHED_PPU_DEEPGEMM_MXFP4_BF16",
+    "PPU_DEEPGEMM_MXFP4_FP8",
+    "BATCHED_PPU_DEEPGEMM_MXFP4_FP8",
     "PPU_DEEPGEMM_MXFP4_BF16_MMA",
     "BATCHED_PPU_DEEPGEMM_MXFP4_BF16_MMA",
-):
+    "PPU_DEEPGEMM_MXFP4_BF16",
+    "BATCHED_PPU_DEEPGEMM_MXFP4_BF16",
+)
+for _name in _PPU_BACKEND_NAMES:
     extend_enum(Mxfp4MoeBackend, _name, _name)
+
+# W4A8 (MXFP4 weights + per-token FP8 activations) repacks the weights, so it
+# stays opt-in through moe_backend="ppu_deep_gemm_w4a8" instead of an automatic
+# candidate.
+_PPU_W4A8_NAMES = frozenset(
+    {"PPU_DEEPGEMM_MXFP4_FP8", "BATCHED_PPU_DEEPGEMM_MXFP4_FP8"}
+)
 _PPU_CANDIDATES = tuple(
     getattr(Mxfp4MoeBackend, name)
+    for name in _PPU_BACKEND_NAMES
+    if name not in _PPU_W4A8_NAMES
+)
+
+# W4A16 families: "_BF16_MMA" runs DeepGEMM's own w4a16 MMA kernel, "_BF16"
+# reuses MARLIN's 16-bit packing; both resolve to PPUDeepGemmExperts[W4FA16MMA].
+_PPU_W4A16_BACKENDS = tuple(
+    getattr(Mxfp4MoeBackend, name)
     for name in (
-        "PPU_DEEPGEMM_MXFP4",
-        "BATCHED_PPU_DEEPGEMM_MXFP4",
-        "PPU_DEEPGEMM_MXFP4_BF16_MMA",
-        "BATCHED_PPU_DEEPGEMM_MXFP4_BF16_MMA",
         "PPU_DEEPGEMM_MXFP4_BF16",
         "BATCHED_PPU_DEEPGEMM_MXFP4_BF16",
+        "PPU_DEEPGEMM_MXFP4_BF16_MMA",
+        "BATCHED_PPU_DEEPGEMM_MXFP4_BF16_MMA",
     )
 )
 
@@ -75,7 +92,19 @@ def backend_to_kernel_cls(
         )
 
         return [PPUBatchedDeepGemmExpertsMXFP4]
-    if backend in _PPU_CANDIDATES[2:]:
+    if backend == Mxfp4MoeBackend.PPU_DEEPGEMM_MXFP4_FP8:
+        from vllm_sail.model_executor.layers.fused_moe.experts.deep_gemm_moe import (
+            PPUDeepGemmExpertsMXFP4W4A8,
+        )
+
+        return [PPUDeepGemmExpertsMXFP4W4A8]
+    if backend == Mxfp4MoeBackend.BATCHED_PPU_DEEPGEMM_MXFP4_FP8:
+        from vllm_sail.model_executor.layers.fused_moe.experts.batched_deep_gemm_moe import (
+            PPUBatchedDeepGemmExpertsMXFP4W4A8,
+        )
+
+        return [PPUBatchedDeepGemmExpertsMXFP4W4A8]
+    if backend in _PPU_W4A16_BACKENDS:
         if backend.name.startswith("BATCHED_"):
             from vllm_sail.model_executor.layers.fused_moe.experts import (
                 batched_deep_gemm_moe as experts,
@@ -119,6 +148,11 @@ def map_mxfp4_backend(runner_backend: MoEBackend) -> list[Mxfp4MoeBackend]:
             Mxfp4MoeBackend.BATCHED_PPU_DEEPGEMM_MXFP4_BF16_MMA,
             Mxfp4MoeBackend.PPU_DEEPGEMM_MXFP4_BF16,
             Mxfp4MoeBackend.BATCHED_PPU_DEEPGEMM_MXFP4_BF16,
+        ]
+    if runner_backend == "ppu_deep_gemm_w4a8":
+        return [
+            Mxfp4MoeBackend.PPU_DEEPGEMM_MXFP4_FP8,
+            Mxfp4MoeBackend.BATCHED_PPU_DEEPGEMM_MXFP4_FP8,
         ]
     return _upstream_map_mxfp4_backend(runner_backend)
 
@@ -169,6 +203,12 @@ def _backend_activation_key(backend: Mxfp4MoeBackend) -> QuantKey | None:
         Mxfp4MoeBackend.BATCHED_PPU_DEEPGEMM_MXFP4,
     ):
         return oracle.kMxfp4Dynamic
+    if backend in (
+        Mxfp4MoeBackend.PPU_DEEPGEMM_MXFP4_FP8,
+        Mxfp4MoeBackend.BATCHED_PPU_DEEPGEMM_MXFP4_FP8,
+    ):
+        # W4A8 uses per-token dynamic FP8 activations.
+        return kFp8DynamicTokenSym
     return _upstream_backend_activation_key(backend)
 
 
@@ -197,9 +237,13 @@ def select_deepseek_v4_mxfp4_moe_backend(config):
     if not current_platform.is_ppu():
         return _upstream_select_deepseek_v4(config)
     activation_key = None
-    if not current_platform.is_device_capability((8, 0)) and config.moe_backend not in (
-        "marlin",
-        "ppu_deep_gemm_w4a16",
-    ):
-        activation_key = oracle.kMxfp4Dynamic
+    if not current_platform.is_device_capability((8, 0)):
+        if config.moe_backend == "ppu_deep_gemm_w4a8":
+            # W4A8: per-token dynamic FP8 activations.
+            activation_key = kFp8DynamicTokenSym
+        elif config.moe_backend not in (
+            "marlin",
+            "ppu_deep_gemm_w4a16",
+        ):
+            activation_key = oracle.kMxfp4Dynamic
     return oracle.select_mxfp4_moe_backend(config, activation_key=activation_key)

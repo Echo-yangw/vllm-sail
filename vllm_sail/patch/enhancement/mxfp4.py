@@ -38,13 +38,23 @@ _QMODULE = "vllm.model_executor.layers.quantization.mxfp4"
 _OMODULE = "vllm.model_executor.layers.fused_moe.oracle.mxfp4"
 AFFECTED_VERSIONS = ">=0.32.0,<0.33.0"
 
-_PPU_BACKEND_NAMES = (
-    "PPU_DEEPGEMM_MXFP4",
-    "BATCHED_PPU_DEEPGEMM_MXFP4",
-    "PPU_DEEPGEMM_MXFP4_BF16",
-    "BATCHED_PPU_DEEPGEMM_MXFP4_BF16",
-    "PPU_DEEPGEMM_MXFP4_BF16_MMA",
-    "BATCHED_PPU_DEEPGEMM_MXFP4_BF16_MMA",
+# Explicit per-kind member lists, keyed by the kernel path each member takes:
+# "w4a16" reuses MARLIN's 16-bit activation packing, "w4a16mma" is DeepGEMM's
+# own W4A16 MMA kernel, "w4a8"/"w4a4" are the FP8/MXFP4 activation paths.
+# Suffix/substring sniffing silently misfiles a member -- an "_FP8" W4A8 entry
+# used to fall into the "w4a4" group because it carries neither "_BF16" nor
+# "W4A8".
+_PPU_BACKEND_GROUPS = {
+    "w4a4": ("PPU_DEEPGEMM_MXFP4", "BATCHED_PPU_DEEPGEMM_MXFP4"),
+    "w4a16": ("PPU_DEEPGEMM_MXFP4_BF16", "BATCHED_PPU_DEEPGEMM_MXFP4_BF16"),
+    "w4a16mma": (
+        "PPU_DEEPGEMM_MXFP4_BF16_MMA",
+        "BATCHED_PPU_DEEPGEMM_MXFP4_BF16_MMA",
+    ),
+    "w4a8": ("PPU_DEEPGEMM_MXFP4_FP8", "BATCHED_PPU_DEEPGEMM_MXFP4_FP8"),
+}
+_PPU_BACKEND_NAMES = tuple(
+    name for names in _PPU_BACKEND_GROUPS.values() for name in names
 )
 
 REASON_CONFIG = (
@@ -140,13 +150,10 @@ def _ppu_backends(kind: str = "all") -> tuple[Any, ...]:
     """The PPU enum members, or () if the registry has not extended the enum."""
     from vllm.model_executor.layers.fused_moe.oracle.mxfp4 import Mxfp4MoeBackend
 
+    names = _PPU_BACKEND_NAMES if kind == "all" else _PPU_BACKEND_GROUPS.get(kind, ())
     return tuple(
         member
-        for name in _PPU_BACKEND_NAMES
-        if kind == "all"
-        or (kind == "w4a4" and "_BF16" not in name)
-        or (kind == "bf16" and name.endswith("_BF16"))
-        or (kind == "mma" and name.endswith("_MMA"))
+        for name in names
         if (member := getattr(Mxfp4MoeBackend, name, None)) is not None
     )
 
@@ -290,6 +297,15 @@ def install() -> None:
         if not current_platform.is_device_capability(
             (8, 0)
         ) and moe.moe_backend not in ("marlin", "ppu_deep_gemm_w4a16"):
+            if moe.moe_backend == "ppu_deep_gemm_w4a8":
+                # W4A8: per-token dynamic FP8 activations.
+                from vllm.model_executor.layers.quantization.utils.quant_utils import (
+                    kFp8DynamicTokenSym,
+                )
+
+                return oracle.select_mxfp4_moe_backend(
+                    moe, activation_key=kFp8DynamicTokenSym
+                )
             return oracle.select_mxfp4_moe_backend(
                 moe, activation_key=oracle.kMxfp4Dynamic
             )
@@ -351,8 +367,27 @@ def install() -> None:
         a2_scale: torch.Tensor | None = None,
         layer=None,
     ):
-        if mxfp4_backend in _ppu_backends("bf16") + _ppu_backends("mma"):
+        if mxfp4_backend in _ppu_backends("w4a16") + _ppu_backends("w4a16mma"):
             mxfp4_backend = oracle.Mxfp4MoeBackend.MARLIN
+        if mxfp4_backend in _ppu_backends("w4a8"):
+            from vllm.model_executor.layers.fused_moe.config import FusedMoEQuantConfig
+            from vllm.platforms import current_platform
+
+            quant_config = FusedMoEQuantConfig.make(
+                quant_dtype=current_platform.fp8_dtype(),
+                per_act_token_quant=True,
+                weight_dtype="mxfp4",
+                w1_scale=w1_scale,
+                w2_scale=w2_scale,
+                w1_bias=w1_bias,
+                w2_bias=w2_bias,
+                gemm1_clamp_limit=swiglu_limit,
+            )
+            # Attached by _convert_ppu_w4a8_weights during weight conversion,
+            # which runs before _build_moe_kernel -> this function.
+            quant_config.w13_inv_scale = float(getattr(layer, "w13_inv_scale", 1.0))
+            quant_config.w2_inv_scale = float(getattr(layer, "w2_inv_scale", 1.0))
+            return quant_config
         if mxfp4_backend in _ppu_backends("w4a4"):
             from vllm.model_executor.layers.fused_moe.config import (
                 ocp_mx_moe_quant_config,
@@ -413,6 +448,59 @@ def install() -> None:
             w2_bias,
         )
 
+    def _convert_ppu_w4a8_weights(
+        layer,
+        w13_weight,
+        w2_weight,
+        w13_weight_scale,
+        w2_weight_scale,
+        w13_bias,
+        w2_bias,
+    ):
+        """Preprocess W4A8-MXFP4 weights via DeepGEMM.
+
+        Runs during ``process_weights_after_loading`` before
+        ``_build_moe_kernel`` so the inverse scales can be attached to the
+        layer and threaded into the quant config. w2's packed K is padded to
+        a 128-element boundary with zero codes / E8M0-unity scales.
+        """
+        import torch.nn.functional as F
+
+        from vllm_sail.utils.deep_gemm import (
+            get_preprocess_mode,
+            preprocess_weights_and_scales,
+        )
+
+        if w13_bias is not None or w2_bias is not None:
+            raise ValueError("PPU MXFP4 W4A8 experts do not support biases.")
+
+        mode = get_preprocess_mode().W4A8_MXFP4_MMA
+
+        # GEMM2 contracts over the packed w2 K; align it to 128 so the
+        # activation can be zero-padded (zero fp8 codes contribute nothing).
+        pad = (-w2_weight.size(2) * 2) % 128
+        if pad:
+            w2_weight = F.pad(w2_weight, (0, pad // 2))
+            # E8M0 scale bytes: 127 encodes 2**0 (unity).
+            w2_weight_scale = F.pad(w2_weight_scale, (0, pad // 32), value=127)
+
+        w13_weight, w13_weight_scale, w13_inv_scale = preprocess_weights_and_scales(
+            mode, False, w13_weight, w13_weight_scale
+        )
+        w2_weight, w2_weight_scale, w2_inv_scale = preprocess_weights_and_scales(
+            mode, False, w2_weight, w2_weight_scale
+        )
+        layer.w13_inv_scale = float(w13_inv_scale)
+        layer.w2_inv_scale = float(w2_inv_scale)
+        return (
+            w13_weight,
+            w2_weight,
+            torch.nn.Parameter(w13_weight_scale, requires_grad=False),
+            torch.nn.Parameter(w2_weight_scale, requires_grad=False),
+            w13_bias,
+            w2_bias,
+        )
+
     @patch(
         _OMODULE,
         "convert_weight_to_mxfp4_moe_kernel_format",
@@ -434,7 +522,7 @@ def install() -> None:
         use_separated_a4w4: bool = False,
         activation_key=None,
     ):
-        if mxfp4_backend in _ppu_backends("bf16"):
+        if mxfp4_backend in _ppu_backends("w4a16"):
             import vllm.envs as envs
 
             if (envs.VLLM_MARLIN_INPUT_DTYPE or "").lower() in ("int8", "fp8"):
@@ -442,7 +530,7 @@ def install() -> None:
                     "PPU MXFP4 BF16 experts require 16-bit activation weight packing; unset VLLM_MARLIN_INPUT_DTYPE."
                 )
             mxfp4_backend = oracle.Mxfp4MoeBackend.MARLIN
-        if mxfp4_backend in _ppu_backends("mma"):
+        if mxfp4_backend in _ppu_backends("w4a16mma"):
             from vllm_sail.model_executor.layers.fused_moe.deep_gemm_utils import (
                 preprocess_mxfp4_w4a16_scales,
             )
@@ -461,6 +549,16 @@ def install() -> None:
             )
         if mxfp4_backend in _ppu_backends("w4a4"):
             return _convert_ppu_weights(
+                w13_weight,
+                w2_weight,
+                w13_weight_scale,
+                w2_weight_scale,
+                w13_bias,
+                w2_bias,
+            )
+        if mxfp4_backend in _ppu_backends("w4a8"):
+            return _convert_ppu_w4a8_weights(
+                layer,
                 w13_weight,
                 w2_weight,
                 w13_weight_scale,
@@ -503,7 +601,7 @@ def install() -> None:
         w2_input_scale: torch.Tensor | None = None,
         _cache_permute_indices: dict | None = None,
     ):
-        if mxfp4_backend in _ppu_backends("bf16"):
+        if mxfp4_backend in _ppu_backends("w4a16"):
             import vllm.envs as envs
 
             if (envs.VLLM_MARLIN_INPUT_DTYPE or "").lower() in ("int8", "fp8"):
@@ -511,7 +609,7 @@ def install() -> None:
                     "PPU MXFP4 BF16 experts require 16-bit activation weight packing; unset VLLM_MARLIN_INPUT_DTYPE."
                 )
             mxfp4_backend = oracle.Mxfp4MoeBackend.MARLIN
-        if mxfp4_backend in _ppu_backends("mma"):
+        if mxfp4_backend in _ppu_backends("w4a16mma"):
             from vllm_sail.model_executor.layers.fused_moe.deep_gemm_utils import (
                 preprocess_mxfp4_w4a16_scales,
             )
@@ -530,6 +628,16 @@ def install() -> None:
             )
         if mxfp4_backend in _ppu_backends("w4a4"):
             return _convert_ppu_weights(
+                w13_weight,
+                w2_weight,
+                w13_weight_scale,
+                w2_weight_scale,
+                w13_bias,
+                w2_bias,
+            )
+        if mxfp4_backend in _ppu_backends("w4a8"):
+            return _convert_ppu_w4a8_weights(
+                layer,
                 w13_weight,
                 w2_weight,
                 w13_weight_scale,
@@ -564,14 +672,18 @@ def install() -> None:
         if backend in _ppu_backends():
             from vllm.utils.math_utils import round_up
 
-            if backend in _ppu_backends("bf16"):
+            if backend in _ppu_backends("w4a16"):
                 return _upstream_round_up(
                     oracle.Mxfp4MoeBackend.MARLIN,
                     hidden_size,
                     intermediate_size,
                     activation=activation,
                 )
-            alignment = 64 if backend in _ppu_backends("mma") else 32
+            alignment = (
+                64
+                if backend in _ppu_backends("w4a16mma") + _ppu_backends("w4a8")
+                else 32
+            )
             intermediate_size = round_up(intermediate_size, alignment)
             hidden_size = round_up(hidden_size, alignment)
             return hidden_size, intermediate_size

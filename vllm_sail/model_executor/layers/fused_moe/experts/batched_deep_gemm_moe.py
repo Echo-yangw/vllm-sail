@@ -3,6 +3,7 @@
 
 
 import torch
+import torch.nn.functional as F
 import vllm.model_executor.layers.fused_moe.modular_kernel as mk
 from vllm.forward_context import get_forward_context, is_forward_context_available
 from vllm.logger import init_logger
@@ -37,17 +38,125 @@ from vllm_sail.model_executor.layers.quantization.utils.mxfp4_utils import (
 )
 from vllm_sail.utils.deep_gemm import (
     DeepGemmQuantScaleFMT,
+    activation_and_mul_masked,
     bf16_m_grouped_gemm_nt_masked,
     fp4_m_grouped_gemm_nt_masked,
+    fp8_fp4_m_grouped_gemm_nt_masked,
     fp8_m_grouped_gemm_nt_masked,
+    get_activation_mode,
     get_mk_alignment_for_contiguous_layout,
+    get_quant_mode,
+    has_masked_fused_act_quant,
     int8_m_grouped_gemm_nt_masked,
     is_deep_gemm_e8m0_used,
     is_deep_gemm_supported,
+    is_ppu_15,
     w4a16_m_grouped_gemm_nt_masked,
 )
 
 logger = init_logger(__name__)
+
+
+def _deepgemm_masked_activation(
+    activation: MoEActivation,
+    activation_config,
+) -> tuple[object, dict[str, object]] | None:
+    """Map a vLLM MoE activation onto DeepGEMM's standalone activation kernel.
+
+    Returns ``(activation_mode, kwargs)`` for
+    ``activation_and_mul_masked``, or ``None`` when the activation (or its
+    parameterization) has no DeepGEMM equivalent so the caller can fall back to
+    ``apply_moe_activation`` followed by a separate quantization.
+    """
+    activation_mode = get_activation_mode()
+    if activation == MoEActivation.SILU:
+        limit = activation_config.clamp_limit
+        if limit is not None and (
+            activation_config.alpha != 1.0 or activation_config.beta != 0.0
+        ):
+            # alpha/beta only feed the SWIGLUOAI epilogue of the fallback; the
+            # fused kernel implements the plain SwiGLU(-with-clamp) math.
+            return None
+        return activation_mode.SILU, {
+            "swiglu_limit": None if limit is None else float(limit)
+        }
+    if activation == MoEActivation.SWIGLUSTEP:
+        # `swiglustep_and_mul` clamps SiLU(gate) and up at a fixed 7.0, which is
+        # exactly DeepGEMM's SILU_STEP with the same limit.
+        return activation_mode.SILU_STEP, {"swiglu_limit": 7.0}
+    if activation == MoEActivation.SITU:
+        beta = activation_config.activation_situ_beta
+        if beta is None:
+            # Mirror the upstream fallback, which refuses to guess a beta.
+            return None
+        linear_beta = activation_config.activation_situ_linear_beta
+        if linear_beta is not None and linear_beta <= 0:
+            # <= 0 means "unset" to the vLLM kernel; DeepGEMM wants None.
+            linear_beta = None
+        return activation_mode.SITU, {
+            "beta": float(beta),
+            "linear_beta": None if linear_beta is None else float(linear_beta),
+        }
+    return None
+
+
+# Resolved once: both the installed DeepGEMM build and the device are fixed at
+# import time, and this sits on the per-layer hot path.
+_MASKED_ACT_QUANT_AVAILABLE: bool | None = None
+
+
+def _masked_act_quant_available() -> bool:
+    """Whether DeepGEMM's masked activation+quant kernel can run here.
+
+    The kernel asserts PPU 1.5 inside its C++ entry point.
+    """
+    global _MASKED_ACT_QUANT_AVAILABLE
+    if _MASKED_ACT_QUANT_AVAILABLE is None:
+        _MASKED_ACT_QUANT_AVAILABLE = has_masked_fused_act_quant() and is_ppu_15()
+    return _MASKED_ACT_QUANT_AVAILABLE
+
+
+def _check_masked_act_quant_inputs(
+    act_in: torch.Tensor, expert_num_tokens: torch.Tensor | None
+) -> None:
+    """Validate the operands of `activation_and_mul_masked`, raising if unusable.
+
+    The W4A8 experts have no unfused activation fallback, so anything the kernel
+    cannot consume is a hard error instead of a silent slow path. The kernel
+    wants a contiguous BF16 `[E, T, 2*N]` gate/up buffer and a contiguous int32
+    per-expert token count on the same device.
+    """
+    if expert_num_tokens is None:
+        raise RuntimeError(
+            "PPUBatchedDeepGemmExpertsMXFP4W4A8 needs per-expert token counts "
+            "for DeepGEMM's masked activation+quant kernel, got None"
+        )
+    if (
+        expert_num_tokens.dtype != torch.int32
+        or expert_num_tokens.dim() != 1
+        or not expert_num_tokens.is_contiguous()
+    ):
+        raise RuntimeError(
+            "PPUBatchedDeepGemmExpertsMXFP4W4A8 masked activation+quant needs "
+            "a contiguous int32 [E] token count, got "
+            f"dtype={expert_num_tokens.dtype}, dim={expert_num_tokens.dim()}, "
+            f"contiguous={expert_num_tokens.is_contiguous()}"
+        )
+    if (
+        act_in.dtype != torch.bfloat16
+        or act_in.dim() != 3
+        or not act_in.is_contiguous()
+        or act_in.size(0) != expert_num_tokens.size(0)
+        or act_in.size(-1) % 2 != 0
+    ):
+        raise RuntimeError(
+            "PPUBatchedDeepGemmExpertsMXFP4W4A8 masked activation+quant needs "
+            "a contiguous BF16 [E, T, 2*N] gate/up buffer matching the token "
+            f"count length {expert_num_tokens.size(0)}, got dtype={act_in.dtype}, "
+            f"shape={tuple(act_in.shape)}, "
+            f"contiguous={act_in.is_contiguous()}"
+        )
+
 
 
 def scales_shape_stride_dtype(
@@ -1509,4 +1618,166 @@ class PPUBatchedDeepGemmExpertsMXFP4(mk.FusedMoEExpertsModular):
             output,
             expert_num_tokens,
             expected_m,
+        )
+
+
+class PPUBatchedDeepGemmExpertsMXFP4W4A8(PPUBatchedDeepGemmExpertsMXFP4):
+    """Batched (EP/DeepEP) W4A8 MoE experts on PPU DeepGEMM.
+
+    Weights are MXFP4-packed (``[E, N, K/2]``) preprocessed by
+    ``preprocess_weights_and_scales(W4A8_MXFP4_MMA, ...)``; activations are
+    per-token FP8. The weight preprocessing inverse scales are handed to the
+    wrapped GEMMs as their `inv_scale` (``w13_inv_scale`` for GEMM1,
+    ``w2_inv_scale`` for GEMM2), so each is applied exactly once inside the
+    kernel and the activation row scales stay plain ``amax / 448``.
+    """
+
+    def __init__(
+        self,
+        moe_config: FusedMoEConfig,
+        quant_config: FusedMoEQuantConfig,
+        max_num_tokens: int,
+        num_dispatchers: int,
+    ):
+        super().__init__(
+            moe_config=moe_config,
+            quant_config=quant_config,
+            max_num_tokens=max_num_tokens,
+            num_dispatchers=num_dispatchers,
+        )
+        self.w13_inv_scale = float(getattr(quant_config, "w13_inv_scale", 1.0))
+        self.w2_inv_scale = float(getattr(quant_config, "w2_inv_scale", 1.0))
+
+    @staticmethod
+    def _supports_current_device() -> bool:
+        # W4A8 MMA requires sm89+/M890 on PPU; disable on sm80. The masked
+        # activation+quant kernel that A2 depends on only exists on PPU 1.5.
+        if current_platform.is_device_capability((8, 0)):
+            return False
+        return is_deep_gemm_supported() and _masked_act_quant_available()
+
+    @staticmethod
+    def _supports_quant_scheme(
+        weight_key: QuantKey | None,
+        activation_key: QuantKey | None,
+    ) -> bool:
+        return (weight_key, activation_key) == (kMxfp4Static, kFp8DynamicTokenSym)
+
+    @staticmethod
+    def _supports_activation(activation: MoEActivation) -> bool:
+        # Only the activations DeepGEMM's masked activation+quant kernel
+        # implements: there is no unfused A2 path for W4A8.
+        return activation in [
+            MoEActivation.SILU,
+            MoEActivation.SWIGLUSTEP,
+            MoEActivation.SITU,
+        ]
+
+    def supports_packed_ue8m0_act_scales(self) -> bool:
+        # Per-token FP8 row scales are float32 [M, 1], not packed UE8M0.
+        return False
+
+    def apply(
+        self,
+        output: torch.Tensor,
+        hidden_states: torch.Tensor,
+        w1: torch.Tensor,
+        w2: torch.Tensor,
+        topk_weights: torch.Tensor,
+        topk_ids: torch.Tensor,
+        activation: MoEActivation,
+        global_num_experts: int,
+        expert_map: torch.Tensor | None,
+        a1q_scale: torch.Tensor | None,
+        a2_scale: torch.Tensor | None,
+        workspace13: torch.Tensor,
+        workspace2: torch.Tensor,
+        expert_tokens_meta: mk.ExpertTokensMetadata | None,
+        apply_router_weight_on_input: bool,
+    ):
+        assert expert_tokens_meta is not None
+        expert_num_tokens = expert_tokens_meta.expert_num_tokens
+
+        assert hidden_states.ndim == 3
+        a1q = hidden_states
+
+        # For mxfp4: w1.size(2) is hidden_size // 2 (two fp4 packed per uint8),
+        # and w2.size(1) is hidden_size (the full uncompressed row count).
+        assert w2.size(1) == w1.size(2) * 2
+
+        E, max_num_tokens, N, K, _ = self.moe_problem_size(
+            hidden_states, w1, w2, topk_ids
+        )
+
+        expected_m = self.estimate_expected_m(
+            global_num_experts=global_num_experts,
+            max_tokens_per_expert=max_num_tokens,
+            topk=topk_ids.size(-1),
+        )
+
+        # workspace1: (E, T, N) — gemm1 bf16 output
+        workspace1 = _resize_cache(workspace13, (E, max_num_tokens, N))
+
+        # GEMM1: per-token FP8 activations vs preprocessed W4A8 weights.
+        fp8_fp4_m_grouped_gemm_nt_masked(
+            (a1q, a1q_scale),
+            (w1, self.w1_scale),
+            workspace1,
+            expert_num_tokens,
+            expected_m,
+            inv_scale=self.w13_inv_scale,
+        )
+
+        # Activation + gate*up multiply + per-token FP8 quantization, fused and
+        # masked by DeepGEMM: the kernel is driven by `expert_num_tokens` and
+        # only touches the valid rows of every expert. Invalid rows keep whatever
+        # the kernel left behind (uninitialized), which is fine because the
+        # masked GEMM below never reads past `expert_num_tokens[e]`.
+        #
+        # There is deliberately no unfused fallback here: an unusable build,
+        # device or activation raises instead of silently falling back to a
+        # much slower two-step path with different rounding.
+        if not _masked_act_quant_available():
+            raise RuntimeError(
+                "PPUBatchedDeepGemmExpertsMXFP4W4A8 requires DeepGEMM's masked "
+                "activation+quant kernel on PPU 1.5, but the installed "
+                "deep_gemm build does not expose it"
+            )
+        _check_masked_act_quant_inputs(workspace1, expert_num_tokens)
+        spec = _deepgemm_masked_activation(activation, self.activation_config)
+        if spec is None:
+            raise ValueError(
+                f"Activation {activation} is not supported by DeepGEMM's masked "
+                "activation+quant kernel; "
+                "PPUBatchedDeepGemmExpertsMXFP4W4A8 has no unfused fallback"
+            )
+        act_mode, act_kwargs = spec
+
+        activation_out_dim = self.adjust_N_for_activation(N, activation)
+        # GEMM2 requires the activation K to match the (padded) packed w2 K.
+        down_k = w2.size(2) * 2
+
+        # The returned row scales are plain `amax / 448`; GEMM2 applies the
+        # inverse weight scale through its own `inv_scale`.
+        a2q, a2q_scale = activation_and_mul_masked(
+            act_mode,
+            get_quant_mode().FP8_CHANNEL,
+            workspace1,
+            expert_num_tokens,
+            expected_m=expected_m,
+            **act_kwargs,
+        )
+        if down_k > activation_out_dim:
+            a2q = F.pad(a2q, (0, down_k - activation_out_dim))
+
+        a2q = a2q.view(E, max_num_tokens, down_k)
+        a2q_scale = a2q_scale.view(E, max_num_tokens, 1)
+
+        fp8_fp4_m_grouped_gemm_nt_masked(
+            (a2q, a2q_scale),
+            (w2, self.w2_scale),
+            output,
+            expert_num_tokens,
+            expected_m,
+            inv_scale=self.w2_inv_scale,
         )
