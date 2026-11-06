@@ -225,16 +225,59 @@ def gather_qsa_fp4_keys(
     per-row ``cu_seqlen_ks`` rebased onto the request each row belongs to, and
     the columns it writes are already request-relative.
 
-    ``block_table`` must already be expanded to FP4 page granularity. Returns
-    int8 ``[packed_key_capacity, 64]`` and int32 ``[packed_key_capacity]``.
-    Slots past ``cu_seqlens[-1]`` alias the last request; their bytes are never
-    referenced because every row end stays inside its own request, and the
-    clamps keep the gather indices in bounds. All sizes come from the host-side
-    capacity bound, so nothing here synchronizes.
+    ``kv_cache`` is the bound compressed cache and ``block_table`` the framework
+    block table, both in framework-block geometry rather than re-paged onto
+    64-row FP4 pages. ``_qsa_prepare_kernel`` takes its page size from
+    ``compressed_cache.shape[1]``, so it stores a framework block planar: every
+    row's 64 value bytes, then every row's 4 UE8M0 scale bytes. Reading that
+    back as 68 contiguous bytes per row would take the scales out of the value
+    plane and shift every row past the first, so the two planes are gathered at
+    their own block-relative offsets.
+
+    The cache is one slice of the combined hybrid KV block, so its block pitch
+    ``stride(0)`` also spans the other caches and is much larger than the
+    ``block_rows * 68`` bytes this cache occupies. The writer steps blocks by the
+    same ``stride(0)`` and never uses ``stride(1)``, so that padding is not
+    something to reject -- only a pitch too small to hold a block is.
+
+    Returns int8 ``[packed_key_capacity, 64]`` and int32
+    ``[packed_key_capacity]``. Slots past ``cu_seqlens[-1]`` alias the last
+    request; their bytes are never referenced because every row end stays inside
+    its own request, and the clamps keep the gather indices in bounds. All sizes
+    come from the host-side capacity bound, so nothing here synchronizes.
     """
+    num_blocks, block_rows, num_kv_heads, row_bytes = kv_cache.shape
+    if num_kv_heads != 1 or row_bytes != MXFP4_ROW_BYTES:
+        raise ValueError(
+            "QSA MXFP4 gather needs the bound compressed cache as "
+            f"[blocks, rows, 1, {MXFP4_ROW_BYTES}], got {tuple(kv_cache.shape)}"
+        )
+    stride_block = kv_cache.stride(0)
+    block_bytes = block_rows * row_bytes
+    # ``stride(1) == row_bytes`` is not a tight-packing demand: the block pitch
+    # may exceed ``block_bytes`` arbitrarily. It only pins the rows to the
+    # allocation's own pitch, which is what makes the byte view below provably
+    # inside the tensor's footprint rather than merely inside the storage.
+    if (
+        kv_cache.stride(3) != 1
+        or kv_cache.stride(1) != row_bytes
+        or stride_block < block_bytes
+    ):
+        raise ValueError(
+            "QSA MXFP4 gather needs each framework block's "
+            f"{block_bytes} bytes at a {row_bytes}-byte row pitch inside its own "
+            f"block pitch, got strides {tuple(kv_cache.stride())}"
+        )
+    # ``bind_kv_cache`` hands the cache over transposed, so dim 2 is a size-1
+    # artifact whose stride is the block pitch rather than 0. Span exactly the
+    # tensor's own footprint -- the last block's last byte -- so the view stops
+    # before the padding after it; the gather never reads that gap.
+    flat = kv_cache.as_strided(
+        ((num_blocks - 1) * stride_block + block_bytes,),
+        (1,),
+        kv_cache.storage_offset(),
+    )
     num_reqs = cu_seqlens.shape[0] - 1
-    page_rows = kv_cache.shape[1]
-    packed_dim = kv_cache.shape[3] - MXFP4_SCALE_BYTES
     device = kv_cache.device
     packed_positions = torch.arange(
         packed_key_capacity, dtype=torch.int64, device=device
@@ -244,15 +287,27 @@ def gather_qsa_fp4_keys(
     )
     packed_req.clamp_(max=num_reqs - 1)
     packed_row = packed_positions - cu_seqlens.index_select(0, packed_req)
-    packed_row.clamp_(0, block_table.shape[1] * page_rows - 1)
-    block_ids = block_table[packed_req, packed_row // page_rows].long()
-    slot = packed_row % page_rows
-    # One gather of the whole 68-byte row, then split: slicing the value plane
-    # out of the flattened cache first would leave a strided view that cannot
-    # be reshaped without a copy.
-    row = kv_cache[block_ids, slot, 0]
-    values = row[:, :packed_dim].contiguous().view(torch.int8)
-    scales = row[:, packed_dim:].contiguous().view(torch.int32).squeeze(1)
+    packed_row.clamp_(0, block_table.shape[1] * block_rows - 1)
+    block_ids = block_table[packed_req, packed_row // block_rows].long()
+    slot = packed_row % block_rows
+    value_base = block_ids * stride_block + slot * MXFP4_PACKED_HEAD_DIM
+    scale_base = (
+        block_ids * stride_block
+        + block_rows * MXFP4_PACKED_HEAD_DIM
+        + slot * MXFP4_SCALE_BYTES
+    )
+    values = flat[
+        value_base[:, None]
+        + torch.arange(MXFP4_PACKED_HEAD_DIM, dtype=torch.int64, device=device)
+    ].view(torch.int8)
+    scales = (
+        flat[
+            scale_base[:, None]
+            + torch.arange(MXFP4_SCALE_BYTES, dtype=torch.int64, device=device)
+        ]
+        .view(torch.int32)
+        .squeeze(1)
+    )
     return values, scales
 
 

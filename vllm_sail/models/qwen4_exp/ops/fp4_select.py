@@ -193,9 +193,11 @@ def qsa_select_paged_prefill(
     cu_seqlens = torch.zeros(num_requests + 1, dtype=torch.int64, device=device)
     torch.cumsum(keys_per_req, 0, dtype=torch.int64, out=cu_seqlens[1:])
 
-    fp4_cache, fp4_block_table = _fp4_pages_and_table(k_cache, page_table)
+    # The gather reads the framework-block-planar layout the prepare kernel
+    # writes, so prefill takes the bound cache and block table as they are;
+    # re-paging onto 64-row FP4 pages is only what the paged kernel needs.
     k_values, k_sf = gather_qsa_fp4_keys(
-        fp4_cache, fp4_block_table, cu_seqlens, packed_key_capacity
+        k_cache, page_table, cu_seqlens, packed_key_capacity
     )
 
     row_starts = cu_seqlens.index_select(0, req_per_row).to(torch.int32)
