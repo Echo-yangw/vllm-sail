@@ -25,7 +25,7 @@ from vllm.models.qwen4_exp.nvidia.ops.qsa_prepare import (
 from vllm.triton_utils import tl, triton
 
 from vllm_sail.models.qwen4_exp.ops.mxfp4 import (
-    MXFP4_E2M1_MAX,
+    _E2M1_MAX,
     MXFP4_NUM_SCALE_BLOCKS,
     MXFP4_PACKED_HEAD_DIM,
     MXFP4_SCALE_BYTES,
@@ -48,8 +48,8 @@ def _pack_mxfp4_row(y, NUM_SCALE_BLOCKS: tl.constexpr, QUANT_BLOCK: tl.constexpr
     odd = odd.to(tl.float32)
     amax = tl.max(tl.maximum(tl.abs(even), tl.abs(odd)), axis=1)
     # 6 * 2^-126 keeps an all-zero block from producing a -inf exponent.
-    amax = tl.maximum(amax, MXFP4_E2M1_MAX * (2**-126))
-    log2_ratio = tl.ceil(tl.log2(amax * (1.0 / MXFP4_E2M1_MAX)))
+    amax = tl.maximum(amax, _E2M1_MAX * (2**-126))
+    log2_ratio = tl.ceil(tl.log2(amax * (1.0 / _E2M1_MAX)))
     log2_ratio = tl.minimum(tl.maximum(log2_ratio, -127.0), 127.0)
     inv_scale = tl.exp2(-log2_ratio)[:, None]
     ue8m0 = (log2_ratio + 127.0).to(tl.int32)

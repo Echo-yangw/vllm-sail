@@ -27,6 +27,11 @@ MXFP4_SCALE_BYTES = MXFP4_NUM_SCALE_BLOCKS
 MXFP4_ROW_BYTES = MXFP4_PACKED_HEAD_DIM + MXFP4_SCALE_BYTES
 MXFP4_PAGE_ROWS = 64
 
+# Triton resolves a @jit body's globals against the defining module and rejects
+# any that are not constexpr *instances*, so the kernels read this alias; the
+# plain float above stays the host-visible value.
+_E2M1_MAX = tl.constexpr(MXFP4_E2M1_MAX)
+
 
 @triton.jit
 def _fp32x2_to_fp4x2(x_lo, x_hi):
@@ -62,8 +67,8 @@ def _quantize_mxfp4_pair(x_lo, x_hi):
     """
     amax = tl.maximum(tl.max(tl.abs(x_lo)), tl.max(tl.abs(x_hi)))
     # 6 * 2^-126 keeps a all-zero block from producing a -inf exponent.
-    amax = tl.maximum(amax, MXFP4_E2M1_MAX * (2**-126))
-    log2_ratio = tl.ceil(tl.log2(amax * (1.0 / MXFP4_E2M1_MAX)))
+    amax = tl.maximum(amax, _E2M1_MAX * (2**-126))
+    log2_ratio = tl.ceil(tl.log2(amax * (1.0 / _E2M1_MAX)))
     log2_ratio = tl.minimum(tl.maximum(log2_ratio, -127.0), 127.0)
     inv_scale = tl.exp2(-log2_ratio)
     ue8m0 = (log2_ratio + 127.0).to(tl.uint8)
