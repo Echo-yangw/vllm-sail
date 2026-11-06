@@ -63,6 +63,7 @@ def installed_indexer(modules, patch_utils_module):
             DeepseekV32IndexerMetadata=type("DeepseekV32IndexerMetadata", (), {}),
             get_paged_mqa_logits_metadata=lambda *args, **kwargs: None,
             dsa_indexer_uses_fp4=upstream,
+            _supports_flattened_device_query_lens=lambda: False,
             DSA_INDEXER_KV_DTYPES=("fp8", "mxfp4"),
         )
         patch = load_patch("vllm_sail/patch/enhancement/attention/mla_indexer.py")

@@ -226,6 +226,7 @@ def test_accepted_regressions_are_excluded_and_stubbable(shipped: m.Manifest) ->
 @pytest.mark.parametrize(
     "op",
     [
+        "fused_deepseek_v4_kv_rope_insert",
         "fused_minimax_m3_qknorm_rope_kv_insert",
         "fused_kimi_k3_mla_decode_q_concat_ds_mla_insert",
         "fused_kimi_k3_mla_decode_q_concat_kv_cache_fp8_insert",
@@ -263,6 +264,7 @@ def test_model_kernel_dependencies_are_compiled_and_bound(shipped, op):
     "op",
     [
         "topk_softplus_sqrt",
+        "fused_deepseek_v4_kv_rope_insert",
         "fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert",
         "fused_deepseek_v4_qnorm_rope_kv_rope_full_cache_bf16_insert",
         "fused_deepseek_v4_qnorm_rope_kv_rope_full_cache_fp8_insert",

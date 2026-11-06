@@ -85,6 +85,7 @@ the bundled default recipe for BF16. Device and model qualification is required.
 | --- | --- |
 | Dense and MoE models | Upstream vLLM architectures using the applicable PPU operators and backends |
 | DeepSeek V4 | Model, MTP and DSpark registrations, with PPU attention, routing and cache paths |
+| DeepSeek V4.1 | Target and DSpark adaptation with PPU FlashMLA, delayed mHC and mixed-precision quantization; device verification pending |
 | MiniMax M3 | Optional model registrations, quantization mapping and native attention-related operations |
 | Qwen hybrid models | GDN attention and selected quantization and speculative-decoding adaptations |
 | Kimi K3 | KDA attention and native MLA/cache operations |

@@ -27,6 +27,7 @@ from vllm_sail.patch.enhancement.attention import (
     kv_cache_interface,  # noqa: F401
     mhc,  # noqa: F401
     mhc_tilelang,  # noqa: F401
+    mhc_delayed,  # noqa: F401
     mla_attention,  # noqa: F401
     mla_indexer,  # noqa: F401
     minimax_dspark,  # noqa: F401

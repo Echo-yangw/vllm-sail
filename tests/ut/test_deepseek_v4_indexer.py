@@ -245,7 +245,12 @@ def test_consumer_inventory_and_signatures_match_vllm_source(installed):
         # The fixture intentionally stubs vLLM; source validation is opt-in here.
         pytest.skip("set VLLM_SOURCE_ROOT to a vLLM checkout for source validation")
     discovered = {name: set() for name in patched._INDEXER_ALIAS_CONSUMERS}
-    for path in (vllm_root / "models/deepseek_v4").rglob("*.py"):
+    paths = [
+        path
+        for name in ("deepseek_v4", "deepseek_v41")
+        for path in (vllm_root / "models" / name).rglob("*.py")
+    ]
+    for path in paths:
         parts = path.relative_to(vllm_root).with_suffix("").parts
         is_package = parts[-1] == "__init__"
         module = ".".join(("vllm", *(parts[:-1] if is_package else parts)))
@@ -256,7 +261,12 @@ def test_consumer_inventory_and_signatures_match_vllm_source(installed):
             provider = importlib.util.resolve_name(
                 "." * node.level + (node.module or ""), package
             )
-            if provider not in (Q_PROVIDER, K_PROVIDER, f"{BASE}.common.ops"):
+            if provider not in (
+                Q_PROVIDER,
+                K_PROVIDER,
+                f"{BASE}.common.ops",
+                "vllm.models.deepseek_v41.common.ops",
+            ):
                 continue
             for alias in node.names:
                 if alias.name in discovered:

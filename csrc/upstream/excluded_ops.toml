@@ -233,14 +233,6 @@ tier = "b"
 reason = "no PPU implementation"
 
 [[op]]
-namespace = "_C"
-name = "fused_deepseek_v4_kv_rope_insert"
-schema = "fused_deepseek_v4_kv_rope_insert(Tensor kv, Tensor! k_cache, Tensor slot_mapping, Tensor position_ids, Tensor cos_sin_cache, int cache_block_size, Tensor? fp8_scale=None, bool kv_mxfp8=False) -> ()"
-kind = "compute"
-tier = "unclaimed"
-reason = "not declared in csrc/upstream/manifest.toml"
-
-[[op]]
 namespace = "_moe_C"
 name = "fused_globalize_align_block_size"
 schema = "fused_globalize_align_block_size(Tensor! topk_idx, Tensor psum,                     int rank_expert_offset, int global_num_experts,                     int local_num_experts, int block_size,                     Tensor! sorted_ids, Tensor! expert_ids,                     Tensor! num_tokens_post_pad,                     Tensor(a!)? scatter_idx=None) -> ()"

@@ -54,6 +54,7 @@ def register() -> None:
             Fp8ToInt8Config,
         )
         from vllm_sail.models.deepseek_v4.quant_config import DeepseekV4FP8Config
+        from vllm_sail.models.deepseek_v41.quant_config import DeepseekV41FP8Config
 
         for config in (Fp8ToInt8Config, Fp8ToBf16Config, Bf16ToInt8Config):
             name = config.get_name()
@@ -64,5 +65,8 @@ def register() -> None:
         # The public registry explicitly supports overriding builtin configs.
         # Preserve its public name so checkpoint and MTP config resolution agree.
         register_quantization_config("deepseek_v4_fp8")(DeepseekV4FP8Config)
+        register_quantization_config(DeepseekV41FP8Config.get_name())(
+            DeepseekV41FP8Config
+        )
     _registered = True
     logger.debug("Registered PPU quantization configurations")

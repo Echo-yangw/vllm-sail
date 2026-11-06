@@ -11,7 +11,7 @@
 schema = 1
 vllm_version_range = ">=0.32.0,<0.33.0"
 key_interface_count = 10
-target_count = 287
+target_count = 299
 
 [[key_interface]]
 symbol = "vllm.platforms.interface.PlatformEnum"
@@ -208,6 +208,22 @@ module = "vllm/model_executor/kernels/mhc/tilelang.py"
 symbol = "_hc_prenorm_gemm_outputs"
 present = true
 fingerprint = "sha256:99d79181417220d87f6a377fe74dc2434bd369b0a167db1b9ca36d9e680e439b"
+
+[[patch_target]]
+name = "vllm.model_executor.kernels.mhc.tilelang.mhc_fused_post_pre_delayed_tilelang"
+kind = "module"
+module = "vllm/model_executor/kernels/mhc/tilelang.py"
+symbol = "mhc_fused_post_pre_delayed_tilelang"
+present = true
+fingerprint = "sha256:bcd2729a1a6236c27f8822054d974f00dca3630ff558ac037ff4cd1c89817f95"
+
+[[patch_target]]
+name = "vllm.model_executor.kernels.mhc.tilelang.mhc_pre_delayed_tilelang"
+kind = "module"
+module = "vllm/model_executor/kernels/mhc/tilelang.py"
+symbol = "mhc_pre_delayed_tilelang"
+present = true
+fingerprint = "sha256:d14fb46dcb9865a290c9b81628b8874a55e55d184503fa0774b2c12f6fc8ea94"
 
 [[patch_target]]
 name = "vllm.model_executor.layers.activation.SiluAndMul.forward_ppu"
@@ -1690,6 +1706,70 @@ present = true
 fingerprint = "sha256:cd9f420e339d3b9ab68d87165c2a97f241aedc28639e1be8e2606fdd8a69cbdb"
 
 [[patch_target]]
+name = "vllm.models.deepseek_v41.attention.DeepseekV4Indexer.__init__"
+kind = "class"
+module = "vllm/models/deepseek_v41/attention.py"
+symbol = "DeepseekV4Indexer.__init__"
+present = true
+fingerprint = "sha256:8fb800a55761172913a1d59630b24b2a0a53b90ce2fd75abc41df557b84b2a13"
+
+[[patch_target]]
+name = "vllm.models.deepseek_v41.attention.DeepseekV4IndexerCache.get_kv_cache_spec"
+kind = "class"
+module = "vllm/models/deepseek_v41/attention.py"
+symbol = "DeepseekV4IndexerCache.get_kv_cache_spec"
+present = true
+fingerprint = "sha256:92c586db8d0f5a8f373e49becd3e61e002d83219f0a623fdce6f580689e677a6"
+
+[[patch_target]]
+name = "vllm.models.deepseek_v41.common.engram.Engram._create_embedding"
+kind = "class"
+module = "vllm/models/deepseek_v41/common/engram.py"
+symbol = "Engram._create_embedding"
+present = true
+fingerprint = "sha256:a6e0b910fddc9e8cb5ff9c0346bf4fd6a1772b22146b49d6a254489873f4ef3f"
+
+[[patch_target]]
+name = "vllm.models.deepseek_v41.common.engram._engram_lookup_kernel"
+kind = "module"
+module = "vllm/models/deepseek_v41/common/engram.py"
+symbol = "_engram_lookup_kernel"
+present = true
+fingerprint = "sha256:ba17ae86f42a9852fd066aa615d176d875ca8cb9ea016558d240df40cad5b1ee"
+
+[[patch_target]]
+name = "vllm.models.deepseek_v41.nvidia.dspark._linear_scale_param_name"
+kind = "module"
+module = "vllm/models/deepseek_v41/nvidia/dspark.py"
+symbol = "_linear_scale_param_name"
+present = true
+fingerprint = "sha256:bc15dc888d4f18d5a070bfd7726c770a3de019151590227c63d585a788264374"
+
+[[patch_target]]
+name = "vllm.models.deepseek_v41.nvidia.model._linear_scale_param_name"
+kind = "module"
+module = "vllm/models/deepseek_v41/nvidia/model.py"
+symbol = "_linear_scale_param_name"
+present = true
+fingerprint = "sha256:b492a49ff768260e6c4ec3cb0b7681f3547adf975d6001efe2bb658b3a953d22"
+
+[[patch_target]]
+name = "vllm.models.deepseek_v41.nvidia.model._select_dsv4_attn_cls"
+kind = "module"
+module = "vllm/models/deepseek_v41/nvidia/model.py"
+symbol = "_select_dsv4_attn_cls"
+present = true
+fingerprint = "sha256:cd9f420e339d3b9ab68d87165c2a97f241aedc28639e1be8e2606fdd8a69cbdb"
+
+[[patch_target]]
+name = "vllm.models.deepseek_v41.nvidia.vl_model._linear_scale_param_name"
+kind = "module"
+module = "vllm/models/deepseek_v41/nvidia/vl_model.py"
+symbol = "_linear_scale_param_name"
+present = true
+fingerprint = "sha256:d2312c953dfd3e886ab90b9fa7883c43d4c401d1751357bddc5a4a4d5ac92d8b"
+
+[[patch_target]]
 name = "vllm.models.glm5next.common.attention.fwht128_quant_fp8"
 kind = "module"
 module = "vllm/models/glm5next/common/attention.py"
@@ -2154,6 +2234,14 @@ present = true
 fingerprint = "sha256:59d094b16acbc6a6c1e90d017d62b9bb7251c892f2300095f5d80b3760462479"
 
 [[patch_target]]
+name = "vllm.v1.attention.backends.mla.indexer.DeepseekV41IndexerBackend.get_supported_kernel_block_sizes"
+kind = "class"
+module = "vllm/v1/attention/backends/mla/indexer.py"
+symbol = "DeepseekV41IndexerBackend.get_supported_kernel_block_sizes"
+present = true
+fingerprint = "sha256:dfa214107fb3e4c6a79392e8c241489be9d1b68280a59cd6b74e4b08e36a6c80"
+
+[[patch_target]]
 name = "vllm.v1.attention.backends.mla.indexer.PPU_DEEP_GEMM_TB_PER_CU"
 kind = "value"
 module = "vllm/v1/attention/backends/mla/indexer.py"
@@ -2168,6 +2256,14 @@ module = "vllm/v1/attention/backends/mla/indexer.py"
 symbol = "PPU_FP4_INDEXER_ELEMENT_SIZE"
 present = false
 fingerprint = ""
+
+[[patch_target]]
+name = "vllm.v1.attention.backends.mla.indexer._supports_flattened_device_query_lens"
+kind = "module"
+module = "vllm/v1/attention/backends/mla/indexer.py"
+symbol = "_supports_flattened_device_query_lens"
+present = true
+fingerprint = "sha256:2301eb139f932e897f03177ee36ae5ac8ea74cf502b3bf34de360d0c0176685d"
 
 [[patch_target]]
 name = "vllm.v1.attention.backends.mla.indexer.dsa_indexer_uses_fp4"

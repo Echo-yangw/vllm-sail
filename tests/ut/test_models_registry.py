@@ -61,6 +61,7 @@ EXPECTED_ARCHITECTURES = {
     "DeepseekV4ForCausalLM",
     "DeepSeekV4MTPModel",
     "DSparkDraftModel",
+    "DSparkV41DraftModel",
     "GlmMoeDsaForCausalLM",
     "DeepseekV32MTPModel",
     "MiniMaxM3SparseForCausalLM",

@@ -401,11 +401,11 @@ class PPUDeepGemmFP8ScaledMMLinearKernel(FP8ScaledMMLinearKernel):
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
         # Base class stores weight as [K, N] (col-major).
         # fp8_gemm_nt channelwise requires row-major [N, K], transpose here.
-        w = layer.weight
+        w = layer.weight.data.t().contiguous()
         replace_parameter(
             layer,
             "weight",
-            torch.nn.Parameter(w.data.t().contiguous(), requires_grad=False),
+            torch.nn.Parameter(w, requires_grad=False),
         )
 
     def apply_scaled_mm(

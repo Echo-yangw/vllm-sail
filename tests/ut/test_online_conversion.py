@@ -93,6 +93,11 @@ def test_public_registry_registers_once_only_on_ppu(monkeypatch, is_ppu):
     modules["vllm_sail.models.deepseek_v4.quant_config"] = {
         "DeepseekV4FP8Config": object
     }
+    modules["vllm_sail.models.deepseek_v41.quant_config"] = {
+        "DeepseekV41FP8Config": type(
+            "V41Config", (), {"get_name": staticmethod(lambda: "deepseek_v41_fp8")}
+        )
+    }
     for name, attrs in modules.items():
         module = types.ModuleType(name)
         module.__dict__.update(attrs)
@@ -108,7 +113,13 @@ def test_public_registry_registers_once_only_on_ppu(monkeypatch, is_ppu):
     module.register()
     expected = ["mixed_precision_w4"]
     if is_ppu:
-        expected += ["fp8-to-int8", "fp8-to-bf16", "bf16-to-int8", "deepseek_v4_fp8"]
+        expected += [
+            "fp8-to-int8",
+            "fp8-to-bf16",
+            "bf16-to-int8",
+            "deepseek_v4_fp8",
+            "deepseek_v41_fp8",
+        ]
     assert names == expected
 
 

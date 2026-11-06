@@ -48,6 +48,9 @@ _REQUIRED_PPU_MODELS: dict[str, str] = {
     "DSparkDraftModel": (
         "vllm_sail.models.deepseek_v4.dspark:DSparkDeepseekV4ForCausalLM"
     ),
+    "DSparkV41DraftModel": (
+        "vllm_sail.models.deepseek_v41.dspark:DSparkDeepseekV41ForCausalLM"
+    ),
     "GlmMoeDsaForCausalLM": (
         "vllm.model_executor.models.deepseek_v2:GlmMoeDsaForCausalLM"
     ),

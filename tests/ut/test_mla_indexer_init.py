@@ -78,11 +78,13 @@ def builder_factory(modules, patch_utils_module):
             DSA_INDEXER_KV_DTYPES=("fp8", "mxfp4"),
             get_paged_mqa_logits_metadata=lambda *args, **kwargs: None,
             dsa_indexer_uses_fp4=lambda config: False,
+            _supports_flattened_device_query_lens=lambda: "upstream-query-lengths",
         )
         modules(
             "vllm_sail.utils.deep_gemm",
             get_num_sms=lambda: 7,
             has_deep_gemm=lambda: True,
+            is_deep_gemm_supported=lambda: True,
             get_paged_mqa_logits_metadata=lambda *args: None,
         )
         modules(

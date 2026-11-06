@@ -155,6 +155,29 @@ patch(
 )(_ppu_paged_metadata)
 
 
+_upstream_supports_flattened_device_query_lens = (
+    _indexer_module._supports_flattened_device_query_lens
+)
+
+
+def _supports_flattened_device_query_lens() -> bool:
+    from vllm.platforms import current_platform
+
+    if current_platform.is_ppu():
+        # SAIL fixed-length paged logits consumes one expanded query per row.
+        return _ppu_deep_gemm.is_deep_gemm_supported()
+    return _upstream_supports_flattened_device_query_lens()
+
+
+patch(
+    _MODULE,
+    "_supports_flattened_device_query_lens",
+    reason="Use device query lengths for adaptive V4.1 verification with SAIL fixed-length paged logits.",
+    affected_versions=_AFFECTED,
+    remove_when="The indexer delegates flattened device-query-length support to the platform.",
+)(_supports_flattened_device_query_lens)
+
+
 def _split_indexer_prefill_chunks_body(
     compressed_seq_lens_cpu: torch.Tensor,
     prefill_query_lens_cpu: torch.Tensor,

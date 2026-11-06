@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# ruff: noqa: I001  (V4 cache ownership and delayed providers precede V4.1 consumers)
 """Model-layer PPU patches (Phase 5).
 
 Ports the fork's seven modified ``vllm/model_executor/models/`` files
@@ -34,6 +35,9 @@ from vllm_sail.patch.enhancement.models import (
     deepseek_v4_cache,  # noqa: F401
     deepseek_v4_compressor,  # noqa: F401
     deepseek_v4_metadata,  # noqa: F401
+    deepseek_v41,  # noqa: F401
+    deepseek_v41_engram,  # noqa: F401
+    deepseek_v41_indexer,  # noqa: F401
     glm5_next,  # noqa: F401
     kimi_k3,  # noqa: F401
     llama4,  # noqa: F401
