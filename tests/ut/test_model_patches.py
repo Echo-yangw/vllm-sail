@@ -47,6 +47,7 @@ EXPECTED_MODULES = {
     "qwen3_fused_quant",
     "qwen3_moe",
     "qwen3_next",
+    "qwen4_exp_qsa",
     "step3p5_mtp",
 }
 
@@ -99,8 +100,8 @@ def test_all_expected_patch_modules_exist() -> None:
     on_disk = {path.stem for path in _patch_module_files()}
     assert on_disk == EXPECTED_MODULES, (
         "Model patch modules are the audited port of the fork's modified model "
-        "files, the Marlin gate and the Kimi K3 latent-MoE tail; a missing or "
-        "extra module means the port drifted from that inventory."
+        "files, the Marlin gate, the Kimi K3 latent-MoE tail and the Qwen4Exp QSA "
+        "FA3 dispatch; a missing or extra module means that inventory drifted."
     )
 
 
@@ -239,6 +240,8 @@ _EXPECTED_TARGETS = {
     "vllm.model_executor.models.qwen3_moe.Qwen3MoeModel.__init__",
     "vllm.model_executor.models.qwen3_next.th_nvtx_range_push",
     "vllm.model_executor.models.qwen3_next.th_nvtx_range_pop",
+    "vllm.models.qwen4_exp.nvidia.qsa.Qwen4ExpQSAImpl.__init__",
+    "vllm.models.qwen4_exp.nvidia.qsa.Qwen4ExpQSAImpl.forward",
     "vllm.model_executor.models.step3p5_mtp.Step3p5MTP.load_weights",
     (
         "vllm.model_executor.layers.quantization.utils.marlin_utils."

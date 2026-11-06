@@ -11,7 +11,7 @@
 schema = 1
 vllm_version_range = ">=0.32.0,<0.33.0"
 key_interface_count = 10
-target_count = 287
+target_count = 302
 
 [[key_interface]]
 symbol = "vllm.platforms.interface.PlatformEnum"
@@ -1314,6 +1314,110 @@ present = true
 fingerprint = "sha256:898a6678febc9b8866e4086e99f4d961c96c57af92156dc496e7640018fce40e"
 
 [[patch_target]]
+name = "vllm.model_executor.layers.quantization.quark.quark_moe.backend_to_kernel_cls"
+kind = "module"
+module = "vllm/model_executor/layers/quantization/quark/quark_moe.py"
+symbol = "backend_to_kernel_cls"
+present = true
+fingerprint = "sha256:ee597a0aa203af70d8f8eb6137c3a7cc62a4aad8b54e390cc6751927f4fe4558"
+
+[[patch_target]]
+name = "vllm.model_executor.layers.quantization.quark.quark_moe.convert_gpt_oss_weight_to_mxfp4_moe_kernel_format"
+kind = "module"
+module = "vllm/model_executor/layers/quantization/quark/quark_moe.py"
+symbol = "convert_gpt_oss_weight_to_mxfp4_moe_kernel_format"
+present = true
+fingerprint = "sha256:ee597a0aa203af70d8f8eb6137c3a7cc62a4aad8b54e390cc6751927f4fe4558"
+
+[[patch_target]]
+name = "vllm.model_executor.layers.quantization.quark.quark_moe.convert_to_fp8_moe_kernel_format"
+kind = "module"
+module = "vllm/model_executor/layers/quantization/quark/quark_moe.py"
+symbol = "convert_to_fp8_moe_kernel_format"
+present = true
+fingerprint = "sha256:e0054c44029209a2a6a72d17e2225d004019ac63edc51ee2acbea4fb330ee591"
+
+[[patch_target]]
+name = "vllm.model_executor.layers.quantization.quark.quark_moe.convert_to_int8_moe_kernel_format"
+kind = "module"
+module = "vllm/model_executor/layers/quantization/quark/quark_moe.py"
+symbol = "convert_to_int8_moe_kernel_format"
+present = true
+fingerprint = "sha256:5aa9f221a2c0938d10f7cdb1fa9d412124195acc891320965f63527be7ec883b"
+
+[[patch_target]]
+name = "vllm.model_executor.layers.quantization.quark.quark_moe.convert_to_wna16_moe_kernel_format"
+kind = "module"
+module = "vllm/model_executor/layers/quantization/quark/quark_moe.py"
+symbol = "convert_to_wna16_moe_kernel_format"
+present = true
+fingerprint = "sha256:0428d3557b9230085ed34f5b1884bbcd60e70f1d011f982eecd1cd004fc2d2f3"
+
+[[patch_target]]
+name = "vllm.model_executor.layers.quantization.quark.quark_moe.make_fp8_moe_quant_config"
+kind = "module"
+module = "vllm/model_executor/layers/quantization/quark/quark_moe.py"
+symbol = "make_fp8_moe_quant_config"
+present = true
+fingerprint = "sha256:e0054c44029209a2a6a72d17e2225d004019ac63edc51ee2acbea4fb330ee591"
+
+[[patch_target]]
+name = "vllm.model_executor.layers.quantization.quark.quark_moe.make_int8_moe_quant_config"
+kind = "module"
+module = "vllm/model_executor/layers/quantization/quark/quark_moe.py"
+symbol = "make_int8_moe_quant_config"
+present = true
+fingerprint = "sha256:5aa9f221a2c0938d10f7cdb1fa9d412124195acc891320965f63527be7ec883b"
+
+[[patch_target]]
+name = "vllm.model_executor.layers.quantization.quark.quark_moe.make_mxfp4_moe_quant_config"
+kind = "module"
+module = "vllm/model_executor/layers/quantization/quark/quark_moe.py"
+symbol = "make_mxfp4_moe_quant_config"
+present = true
+fingerprint = "sha256:ee597a0aa203af70d8f8eb6137c3a7cc62a4aad8b54e390cc6751927f4fe4558"
+
+[[patch_target]]
+name = "vllm.model_executor.layers.quantization.quark.quark_moe.make_wna16_moe_kernel"
+kind = "module"
+module = "vllm/model_executor/layers/quantization/quark/quark_moe.py"
+symbol = "make_wna16_moe_kernel"
+present = true
+fingerprint = "sha256:0428d3557b9230085ed34f5b1884bbcd60e70f1d011f982eecd1cd004fc2d2f3"
+
+[[patch_target]]
+name = "vllm.model_executor.layers.quantization.quark.quark_moe.mxfp4_round_up_hidden_size_and_intermediate_size"
+kind = "module"
+module = "vllm/model_executor/layers/quantization/quark/quark_moe.py"
+symbol = "mxfp4_round_up_hidden_size_and_intermediate_size"
+present = true
+fingerprint = "sha256:ee597a0aa203af70d8f8eb6137c3a7cc62a4aad8b54e390cc6751927f4fe4558"
+
+[[patch_target]]
+name = "vllm.model_executor.layers.quantization.quark.quark_moe.select_fp8_moe_backend"
+kind = "module"
+module = "vllm/model_executor/layers/quantization/quark/quark_moe.py"
+symbol = "select_fp8_moe_backend"
+present = true
+fingerprint = "sha256:e0054c44029209a2a6a72d17e2225d004019ac63edc51ee2acbea4fb330ee591"
+
+[[patch_target]]
+name = "vllm.model_executor.layers.quantization.quark.quark_moe.select_int8_moe_backend"
+kind = "module"
+module = "vllm/model_executor/layers/quantization/quark/quark_moe.py"
+symbol = "select_int8_moe_backend"
+present = true
+fingerprint = "sha256:5aa9f221a2c0938d10f7cdb1fa9d412124195acc891320965f63527be7ec883b"
+
+[[patch_target]]
+name = "vllm.model_executor.layers.quantization.quark.quark_moe.select_wna16_moe_backend"
+kind = "module"
+module = "vllm/model_executor/layers/quantization/quark/quark_moe.py"
+symbol = "select_wna16_moe_backend"
+present = true
+fingerprint = "sha256:0428d3557b9230085ed34f5b1884bbcd60e70f1d011f982eecd1cd004fc2d2f3"
+
+[[patch_target]]
 name = "vllm.model_executor.layers.quantization.utils.fp8_utils.get_tma_aligned_size"
 kind = "module"
 module = "vllm/model_executor/layers/quantization/utils/fp8_utils.py"
@@ -1864,6 +1968,22 @@ module = "vllm/models/muse_spark/nvidia/model.py"
 symbol = "fused_musespark1x_routing"
 present = true
 fingerprint = "sha256:c5dc07e066663f901158504cc053d9a716ab64c0e4b3c0049558f0479f30d7d3"
+
+[[patch_target]]
+name = "vllm.models.qwen4_exp.nvidia.qsa.Qwen4ExpQSAImpl.__init__"
+kind = "class"
+module = "vllm/models/qwen4_exp/nvidia/qsa.py"
+symbol = "Qwen4ExpQSAImpl.__init__"
+present = true
+fingerprint = "sha256:7997196a726e8a6e3a2fa1342af05d3a500130898a962e8dc47d7a844df7a48c"
+
+[[patch_target]]
+name = "vllm.models.qwen4_exp.nvidia.qsa.Qwen4ExpQSAImpl.forward"
+kind = "class"
+module = "vllm/models/qwen4_exp/nvidia/qsa.py"
+symbol = "Qwen4ExpQSAImpl.forward"
+present = true
+fingerprint = "sha256:24246486548fc1b78dd5f7c60da3b4a06d2568429d5e2f10e241b768d3a118aa"
 
 [[patch_target]]
 name = "vllm.platforms.interface.Platform.is_ppu"

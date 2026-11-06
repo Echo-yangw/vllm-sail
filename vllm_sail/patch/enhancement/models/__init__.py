@@ -23,6 +23,8 @@ Modules, and why each is import-on-install like the rest of the framework:
 * ``minimax_m3`` — retain ordinary MoE finalize on PPU before NVIDIA imports.
 * ``qwen3_moe`` — per-layer mix_layer quant overrides (+36).
 * ``qwen3_next`` — NVTX profiling scaffold (+19).
+* ``qwen4_exp_qsa`` — route Qwen4Exp QSA through PPU FA3's CUDA kernel where it
+  can run the shape; upstream hard-wires the Triton one.
 * ``step3p5_mtp`` — zero-point buffers as optional checkpoint params (+12).
 * ``moe_marlin_gate`` — VLLM_PPU_ENABLE_MOE_MARLIN default-off gate.
 """
@@ -41,5 +43,6 @@ from vllm_sail.patch.enhancement.models import (
     moe_marlin_gate,  # noqa: F401
     qwen3_moe,  # noqa: F401
     qwen3_next,  # noqa: F401
+    qwen4_exp_qsa,  # noqa: F401
     step3p5_mtp,  # noqa: F401
 )
