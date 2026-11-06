@@ -8,11 +8,11 @@ out of the MXFP4 quantization), plus every SwiGLU MLP of the other models --
 call upstream's standalone ``vllm::silu_and_mul`` / ``vllm::situ_and_mul``
 kernel: one launch reading ``[..., 2N]`` and writing ``[..., N]``.
 
-DeepGEMM ships the same math as standalone kernels (``deep_gemm.silu_and_mul``,
-``deep_gemm.situ_and_mul``) with a *values-only* epilogue
-(``ActivationQuantMode.BF16``) that emits BF16 values and no scales -- exactly
-the epilogue ``PPUDeepGemmExperts._deepgemm_act_quant`` selects for its BF16
-(w4a16 or unquantized) experts. Using them here keeps a single fused-activation
+DeepGEMM ships the same math as a standalone kernel
+(``deep_gemm.activation_and_mul``) with a *values-only* epilogue
+(``QuantMode.BF16``) that emits BF16 values and no scales -- exactly the
+epilogue ``PPUDeepGemmExperts._deepgemm_act_quant`` selects for its BF16
+(w4a16 or unquantized) experts. Using it here keeps a single fused-activation
 implementation in the plugin instead of a second hand-written kernel.
 
 Upstream has no PPU hook on these ops, so ``forward_ppu`` is installed
@@ -27,7 +27,7 @@ kernel failure -- falls back to ``forward_cuda``, i.e. the unchanged upstream
 from __future__ import annotations
 
 import functools
-from typing import Any, Callable
+from typing import Any
 
 import torch
 from vllm.logger import init_logger
@@ -35,11 +35,11 @@ from vllm.logger import init_logger
 from vllm_sail import envs as ppu_envs
 from vllm_sail.patch.utils import patch
 from vllm_sail.utils.deep_gemm import (
-    get_activation_quant_mode,
+    activation_and_mul,
+    get_activation_mode,
+    get_quant_mode,
     has_fused_act_quant,
     is_ppu_15,
-    silu_and_mul,
-    situ_and_mul,
 )
 
 _AFFECTED = ">=0.32.0,<0.33.0"
@@ -54,8 +54,8 @@ _DISABLED: set[str] = set()
 
 
 @functools.cache
-def _bf16_act_quant_mode():
-    """DeepGEMM's values-only epilogue, or ``None`` when the path is unusable.
+def _bf16_activation_modes() -> tuple[Any, Any, Any] | None:
+    """DeepGEMM's ``(SILU, SITU, BF16)`` enums, or ``None`` when unusable.
 
     The decision depends on the env switch and on the installed DeepGEMM
     build/device only, so it is resolved once per process (both are fixed at
@@ -67,7 +67,8 @@ def _bf16_act_quant_mode():
         return None
     if not (has_fused_act_quant() and is_ppu_15()):
         return None
-    return getattr(get_activation_quant_mode(), "BF16", None)
+    activation_mode = get_activation_mode()
+    return activation_mode.SILU, activation_mode.SITU, get_quant_mode().BF16
 
 
 def _packed_shape(x: torch.Tensor) -> tuple[int, int] | None:
@@ -85,10 +86,11 @@ def _packed_shape(x: torch.Tensor) -> tuple[int, int] | None:
 def _fused_act_bf16(
     name: str,
     x: torch.Tensor,
-    kernel: Callable[..., Any],
+    activation_mode: Any,
+    quant_mode: Any,
     **kwargs: Any,
 ) -> torch.Tensor | None:
-    """Run DeepGEMM's ``kernel`` with the BF16 (values-only) epilogue.
+    """Run DeepGEMM's ``activation_and_mul`` with the BF16 (values-only) epilogue.
 
     Mirrors the BF16 branch of `PPUDeepGemmExperts._deepgemm_act_quant`: the
     kernel derives one row from both gate halves, writes BF16 and reports no
@@ -103,13 +105,11 @@ def _fused_act_bf16(
     if packed is None:
         return None
 
-    mode = _bf16_act_quant_mode()
-    if mode is None:
-        return None
-
     rows, width = packed
     try:
-        fused = kernel(mode, x.reshape(rows, width), **kwargs)
+        fused = activation_and_mul(
+            activation_mode, quant_mode, x.reshape(rows, width), **kwargs
+        )
     except (AssertionError, RuntimeError) as exc:
         _DISABLED.add(name)
         logger.warning_once(
@@ -131,9 +131,10 @@ def _fused_act_bf16(
     allow_missing=True,
     reason=(
         "Unquantized BF16 SwiGLU (dense MLP and shared experts) runs on upstream's "
-        "standalone vllm::silu_and_mul kernel, so it is replaced by DeepGEMM's fused "
-        "silu_and_mul with the values-only (BF16) epilogue -- the same kernel and "
-        "epilogue PPUDeepGemmExperts._deepgemm_act_quant uses for the BF16 experts. "
+        "standalone vllm::silu_and_mul kernel, so it is replaced by DeepGEMM's "
+        "activation_and_mul(SILU, BF16) with the values-only epilogue -- the same "
+        "kernel and epilogue PPUDeepGemmExperts._deepgemm_act_quant uses for the "
+        "BF16 experts. "
         "Upstream has no PPU hook, so forward_ppu is installed additively and reached "
         "through the custom_op_dispatch patch; every unsupported dtype/shape/device "
         "falls back to forward_cuda."
@@ -142,9 +143,13 @@ def _fused_act_bf16(
     remove_when="upstream adds a forward_ppu hook for SiluAndMul, or PPU stops shipping DeepGEMM's standalone activation kernels.",
 )
 def silu_and_mul_forward_ppu(self, x: torch.Tensor) -> torch.Tensor:
-    fused = _fused_act_bf16("silu_and_mul", x, silu_and_mul, swiglu_limit=None)
-    if fused is not None:
-        return fused
+    modes = _bf16_activation_modes()
+    if modes is not None:
+        fused = _fused_act_bf16(
+            "silu_and_mul", x, modes[0], modes[2], swiglu_limit=None
+        )
+        if fused is not None:
+            return fused
     return self.forward_cuda(x)
 
 
@@ -155,11 +160,11 @@ def silu_and_mul_forward_ppu(self, x: torch.Tensor) -> torch.Tensor:
     reason=(
         "Kimi's SiTU-GLU runs on unquantized BF16 gate_up/down projections, so "
         "upstream's standalone vllm::situ_and_mul kernel is replaced by DeepGEMM's "
-        "fused situ_and_mul with the values-only (BF16) epilogue -- the same kernel "
-        "and epilogue PPUDeepGemmExperts._deepgemm_act_quant uses for the BF16 "
-        "experts. Upstream has no PPU hook, so forward_ppu is installed additively "
-        "and reached through the custom_op_dispatch patch; every unsupported "
-        "dtype/shape/device falls back to forward_cuda."
+        "activation_and_mul(SITU, BF16) with the values-only epilogue -- the same "
+        "kernel and epilogue PPUDeepGemmExperts._deepgemm_act_quant uses for the "
+        "BF16 experts. Upstream has no PPU hook, so forward_ppu is installed "
+        "additively and reached through the custom_op_dispatch patch; every "
+        "unsupported dtype/shape/device falls back to forward_cuda."
     ),
     affected_versions=_AFFECTED,
     remove_when="upstream adds a forward_ppu hook for SituAndMul, or PPU stops shipping DeepGEMM's standalone activation kernels.",
@@ -169,13 +174,16 @@ def situ_and_mul_forward_ppu(self, x: torch.Tensor) -> torch.Tensor:
     if linear_beta is not None and linear_beta <= 0:
         # <= 0 means "unset" to the vLLM kernel; DeepGEMM wants None.
         linear_beta = None
-    fused = _fused_act_bf16(
-        "situ_and_mul",
-        x,
-        situ_and_mul,
-        beta=float(self.beta),
-        linear_beta=None if linear_beta is None else float(linear_beta),
-    )
-    if fused is not None:
-        return fused
+    modes = _bf16_activation_modes()
+    if modes is not None:
+        fused = _fused_act_bf16(
+            "situ_and_mul",
+            x,
+            modes[1],
+            modes[2],
+            beta=float(self.beta),
+            linear_beta=None if linear_beta is None else float(linear_beta),
+        )
+        if fused is not None:
+            return fused
     return self.forward_cuda(x)
