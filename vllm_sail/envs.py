@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     VLLM_SAIL_DISABLE_MOE_WNA16_CUDA: bool = False
     VLLM_SAIL_FORCE_MOE_WNA16_CUDA: bool = False
     VLLM_SAIL_ENABLE_MOE_MARLIN: bool = False
+    VLLM_SAIL_DISABLE_MEGA_MHC: bool = False
     VLLM_SAIL_USE_TRITON_INT8_QUANT: bool = True
     VLLM_SAIL_NVTX_PROFILE: bool = False
     VLLM_SAIL_NVTX_DUMP_TOPK: bool = False
@@ -148,6 +149,12 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Legacy Marlin selection gate. Native Marlin execution remains excluded
     # by the CUDA-free manifest; this flag cannot supply those kernels.
     "VLLM_SAIL_ENABLE_MOE_MARLIN": _bool("VLLM_SAIL_ENABLE_MOE_MARLIN", False),
+    # -- DSV4.1 mHC ----------------------------------------------------------
+    # Disable the PPU Mega mHC kernel so the upstream TileLang mHC path takes
+    # over. The A/B baseline for bisecting mHC regressions: the two paths
+    # compute the same shifted post/pre block, so a difference in the model's
+    # output points at the Mega mHC kernel.
+    "VLLM_SAIL_DISABLE_MEGA_MHC": _bool("VLLM_SAIL_DISABLE_MEGA_MHC", False),
     # -- Quantization -------------------------------------------------------
     # Triton implementation of dynamic per-token int8 quant; faster than the
     # compiled kernel on PPU.
@@ -182,6 +189,7 @@ _aliases: dict[str, tuple[str, ...]] = {
     if name.startswith("VLLM_SAIL_")
 }
 _aliases["VLLM_SAIL_NVTX_PROFILE"] += ("SAIL_NVTX_PROFILE",)
+_aliases["VLLM_SAIL_DISABLE_MEGA_MHC"] += ("SAIL_DISABLE_MEGA_MHC",)
 _canonical_names = {
     alias: name for name, aliases in _aliases.items() for alias in aliases
 }

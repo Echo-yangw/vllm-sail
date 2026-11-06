@@ -17,6 +17,9 @@ Modules, and why each is import-on-install like the rest of the framework:
 * ``deepseek_v4`` — selects the plugin FlashMLA subclass only on PPU; the
   quantization-specific weights mapper remains plugin-local so CUDA behavior
   is unchanged.
+* ``deepseek_v41_mega_mhc`` — routes the V4.1 Mega mHC kernel to the PPU
+  DeepGEMM build, which supports ZW-M890P instead of the upstream SM 10.x
+  family.
 * ``kimi_k3`` — quantized routed up-projection support for the latent-MoE
   tail's fused tiers.
 * ``llama4`` — torch.compile on the custom router (+1).
@@ -36,6 +39,7 @@ from vllm_sail.patch.enhancement.models import (
     deepseek_v41,  # noqa: F401
     deepseek_v41_engram,  # noqa: F401
     deepseek_v41_indexer,  # noqa: F401
+    deepseek_v41_mega_mhc,  # noqa: F401
     kimi_k3,  # noqa: F401
     llama4,  # noqa: F401
     moe_marlin_gate,  # noqa: F401

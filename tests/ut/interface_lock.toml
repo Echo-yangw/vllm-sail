@@ -11,7 +11,7 @@
 schema = 1
 vllm_version_range = ">=0.31.0,<0.32.0"
 key_interface_count = 10
-target_count = 275
+target_count = 278
 
 [[key_interface]]
 symbol = "vllm.platforms.interface.PlatformEnum"
@@ -1672,6 +1672,30 @@ module = "vllm/models/deepseek_v41/nvidia/model.py"
 symbol = "_select_dsv4_attn_cls"
 present = true
 fingerprint = "sha256:cd9f420e339d3b9ab68d87165c2a97f241aedc28639e1be8e2606fdd8a69cbdb"
+
+[[patch_target]]
+name = "vllm.models.deepseek_v41.nvidia.ops.mega_mhc.is_mega_mhc_supported"
+kind = "module"
+module = "vllm/models/deepseek_v41/nvidia/ops/mega_mhc.py"
+symbol = "is_mega_mhc_supported"
+present = true
+fingerprint = "sha256:646c564ed3129623988c071c69f27d797b5cc1b24e2a0f8bbb4764394c6efc34"
+
+[[patch_target]]
+name = "vllm.models.deepseek_v41.nvidia.ops.mega_mhc.mega_mhc"
+kind = "module"
+module = "vllm/models/deepseek_v41/nvidia/ops/mega_mhc.py"
+symbol = "mega_mhc"
+present = true
+fingerprint = "sha256:8e9b4c28a91a4c2d1bd77fb1ffd749ca4af573db0c58f0d535aeb2d6434df0b4"
+
+[[patch_target]]
+name = "vllm.models.deepseek_v41.nvidia.ops.mhc.can_use_mega_mhc"
+kind = "module"
+module = "vllm/models/deepseek_v41/nvidia/ops/mhc.py"
+symbol = "can_use_mega_mhc"
+present = true
+fingerprint = "sha256:fcc82704cf84a4cd40009163bef6e4359d380c25123b951d2d0d7c06056ab700"
 
 [[patch_target]]
 name = "vllm.models.deepseek_v41.nvidia.vl_model._linear_scale_param_name"
