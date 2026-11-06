@@ -33,7 +33,7 @@ BOOL_DEFAULTS = {
 }
 BACKENDS = ("MOE_BACKEND", "DENSE_BACKEND")
 # String env vars with a non-None default and no legacy VLLM_PPU_* alias.
-STRING_DEFAULTS = {"KPOOL_DECODE_LOGITS": "non_paged"}
+STRING_DEFAULTS = {"KPOOL_DECODE_LOGITS": "non_paged", "QSA_KERNEL": "auto"}
 INT_DEFAULTS = {"KPOOL_MAX_DENSE_POOLS": 1 << 21}
 
 
@@ -276,3 +276,28 @@ def test_kpool_rejects_incomplete_paged_logits(monkeypatch, name):
     monkeypatch.setenv(name, "paged")
     with pytest.raises(ValueError, match="Expected one of non_paged"):
         _ = envs.VLLM_SAIL_KPOOL_DECODE_LOGITS
+
+
+@pytest.mark.parametrize("name", ["VLLM_SAIL_QSA_KERNEL", "VLLM_PPU_QSA_KERNEL"])
+def test_qsa_kernel_rejects_unknown_value(monkeypatch, name):
+    """A typo must fail loudly, not silently select the Triton kernel."""
+    monkeypatch.delenv("VLLM_SAIL_QSA_KERNEL", raising=False)
+    monkeypatch.delenv("VLLM_PPU_QSA_KERNEL", raising=False)
+    monkeypatch.setenv(name, "fa3")
+    with pytest.raises(ValueError, match="Expected one of auto, cuda, triton"):
+        _ = envs.VLLM_SAIL_QSA_KERNEL
+
+
+@pytest.mark.parametrize(
+    "raw,expected", [("CUDA", "cuda"), (" triton ", "triton"), ("Auto", "auto")]
+)
+def test_qsa_kernel_normalizes_case_and_space(monkeypatch, raw, expected):
+    monkeypatch.setenv("VLLM_SAIL_QSA_KERNEL", raw)
+    assert envs.VLLM_SAIL_QSA_KERNEL == expected
+
+
+def test_qsa_kernel_sail_name_wins_over_ppu_alias(monkeypatch):
+    monkeypatch.setenv("VLLM_SAIL_QSA_KERNEL", "cuda")
+    monkeypatch.setenv("VLLM_PPU_QSA_KERNEL", "triton")
+    assert envs.VLLM_SAIL_QSA_KERNEL == "cuda"
+    assert envs.VLLM_PPU_QSA_KERNEL == "cuda"

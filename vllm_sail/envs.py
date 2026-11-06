@@ -48,6 +48,7 @@ if TYPE_CHECKING:
     VLLM_SAIL_ENABLE_FP8_TO_INT8: bool = False
     VLLM_SAIL_KPOOL_DECODE_LOGITS: str = "non_paged"
     VLLM_SAIL_KPOOL_MAX_DENSE_POOLS: int = 1 << 21
+    VLLM_SAIL_QSA_KERNEL: str = "auto"
     VLLM_SAIL_NVTX_PROFILE: bool = False
     VLLM_SAIL_NVTX_DUMP_TOPK: bool = False
     VLLM_SAIL_NVTX_VFA_DUMP_SEQLEN: bool = False
@@ -80,6 +81,9 @@ _TRUTHY = ("true", "1", "yes", "on")
 GEMM_BACKENDS = ("deepgemm", "acext", "triton")
 GDN_DECODE_KERNELS = ("auto", "cuda", "pla", "triton")
 KPOOL_DECODE_LOGITS_BACKENDS = ("non_paged",)
+#: Qwen4Exp QSA sparse-attention kernels. ``cuda`` is FA3's QSA path, which only
+#: exists on PPU builds carrying the ``qsa_allow_aiu`` argument.
+QSA_KERNELS = ("auto", "cuda", "triton")
 
 
 def _env_names(name: str) -> tuple[str, ...]:
@@ -209,6 +213,12 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # -- Attention / linear attention --------------------------------------
     # Legacy getter only. Current PLA/Triton dispatch uses VLLM_SAIL_USE_PLA.
     "VLLM_SAIL_FUSED_GDN_DECODE": _bool("VLLM_SAIL_FUSED_GDN_DECODE", True),
+    # Qwen4Exp QSA sparse-attention kernel. ``auto`` (default) takes FA3's QSA
+    # path when the shape gate, the platform gate and the wheel probe all pass,
+    # and falls back to the upstream Triton kernel otherwise; ``cuda`` and
+    # ``triton`` pin either side for A/B measurement. The fork hard-wires
+    # ``Qwen4ExpQSAImpl`` on the layer, so this is the only selection point.
+    "VLLM_SAIL_QSA_KERNEL": _choice("VLLM_SAIL_QSA_KERNEL", "auto", QSA_KERNELS),
     # -- Distributed MoE ---------------------------------------------------
     # DeepEP low-latency deferred recv hook. The hook only pays off on backends
     # that can overlap the deferred receive with other compute; setting this to
