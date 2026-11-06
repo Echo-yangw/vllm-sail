@@ -38,7 +38,9 @@ from vllm.utils.torch_utils import canonicalize_singleton_dim_strides
 
 from vllm_sail.models.qwen4_exp.qsa_fa3 import qsa_fa3_selection_width
 
-logger = init_logger(__name__)
+# Under ``vllm`` so the reservation line survives: vLLM raises only its own logger
+# to INFO, and the root logger stays at WARNING. See qwen4_exp_qsa.py.
+logger = init_logger("vllm.ppu.qsa_fa3_forward")
 
 
 @dataclass(frozen=True)

@@ -44,7 +44,13 @@ from vllm_sail.models.qwen4_exp.qsa_fa3_forward import (
 )
 from vllm_sail.patch.utils import patch
 
-logger = init_logger(__name__)
+# Named under ``vllm``, not ``__name__``: vLLM raises only its own ``vllm`` logger
+# to INFO and leaves the root logger at WARNING, so every ``info_once`` on a
+# ``vllm_sail.*`` logger is silently dropped in a real server. The kernel-selection
+# line below is the only operator-visible evidence of which QSA kernel is running;
+# invisible, it makes VLLM_SAIL_QSA_KERNEL=cuda indistinguishable from a quiet
+# fallback. Same pattern as vllm_sail.attention.flash_attn_shim.
+logger = init_logger("vllm.ppu.qwen4_exp_qsa")
 
 _MODULE = "vllm.models.qwen4_exp.nvidia.qsa"
 _REASON = (

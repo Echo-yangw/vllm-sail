@@ -246,3 +246,32 @@ def test_patch_imports_the_cycle_owner_before_qsa():
     ]
     assert "model" in imported and "qsa" in imported, imported
     assert imported.index("model") < imported.index("qsa"), imported
+
+
+@pytest.mark.parametrize("path", [PATCH_PATH, FORWARD_PATH], ids=["patch", "forward"])
+def test_operator_facing_loggers_live_under_the_vllm_namespace(path):
+    """``info_once`` on a ``vllm_sail.*`` logger is dropped in a real server.
+
+    vLLM configures only its own ``vllm`` logger to INFO and leaves the root
+    logger at WARNING, so a logger named after its module propagates to root and
+    loses every INFO record -- silently, with nothing to distinguish it from a
+    code path that never ran. Both of these messages are the operator's only
+    evidence of what a server is doing: which QSA kernel was selected, and that
+    the FA3 workspace was sized from the live config rather than never reserved.
+
+    Asserted on the source because the drop happens in vLLM's logging setup,
+    which a CPU-only test does not run.
+    """
+    tree = ast.parse(path.read_text(), filename=str(path))
+    names = [
+        node.args[0].value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "init_logger"
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and isinstance(node.args[0].value, str)
+    ]
+    assert names, f'no init_logger("...") call found in {path.name}'
+    assert all(name.startswith("vllm.") for name in names), names
