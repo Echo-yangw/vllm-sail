@@ -1,0 +1,136 @@
+name: Distribute nightly previews
+# Preview only: never update ci-baseline, verified pins, or a final release.
+on:
+  workflow_run:
+    workflows: ['Nightly regression (minimum)']
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      test_run_id:
+        description: 'Successful local Nightly regression (minimum) run ID'
+        type: string
+        required: true
+permissions:
+  contents: read
+  actions: read
+cache-mode: none
+concurrency:
+  group: distribute-nightly-previews
+  cancel-in-progress: false
+  queue: max
+jobs:
+  preflight:
+    if: >-
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_repository.full_name == github.repository &&
+       github.event.workflow_run.head_branch == github.event.repository.default_branch) ||
+      (github.event_name == 'workflow_dispatch' &&
+       github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Require explicit preview deployment configuration
+        env:
+          PPU_TRANSITION_ENABLED: ${{ vars.PPU_TRANSITION_ENABLED }}
+          PREVIEW_REGISTRY_HOST: ${{ vars.PREVIEW_REGISTRY_HOST }}
+          PREVIEW_IMAGE_REPOSITORY: ${{ vars.PREVIEW_IMAGE_REPOSITORY }}
+          RUNTIME_BASE_IMAGE: ${{ vars.RUNTIME_BASE_IMAGE }}
+        run: |
+          python3 control/scripts/ci/deployment.py preflight --mode preview \
+            --catalog control/.github/ci/tests/catalog.json --output plan.json
+  distribute:
+    needs: preflight
+    environment: preview-distribution
+    runs-on: [self-hosted, Linux, X64, 8-ppu-m890p]
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+      - name: Validate the local test run and current attempt
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONSUMER: ${{ github.repository }}
+          TEST_RUN_ID: ${{ inputs.test_run_id || github.event.workflow_run.id }}
+        run: |
+          python3 control/scripts/ci/nightly_assets.py resolve-test-run \
+            --consumer-repository "$CONSUMER" --workflow nightly-tests.yaml --run-id "$TEST_RUN_ID"
+      - name: Block missing passed bundles
+        if: steps.resolve.outputs.ready != 'true'
+        run: |
+          echo 'No passed bundle exists for this run attempt; nothing can be distributed.' >&2
+          exit 2
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ steps.resolve.outputs.bundle_name }}
+          path: flow-${{ github.run_id }}-${{ github.run_attempt }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.resolve.outputs.test_run_id }}
+          github-token: ${{ github.token }}
+      - name: Revalidate deployment evidence against the passed candidate
+        run: |
+          set -Eeuo pipefail
+          flow="flow-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          python3 control/scripts/ci/deployment.py record-evidence \
+            --plan "$flow/plan.json" --runtime "$flow/results/runtime.json" \
+            --candidate "$flow/candidate.json" --output "$flow/distribution-observations.json"
+          cmp "$flow/deployment-evidence.json" "$flow/distribution-observations.json"
+      - name: Check original bytes, tests and monotonic preview pointer
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONSUMER: ${{ github.repository }}
+          TEST_RUN_ID: ${{ steps.resolve.outputs.test_run_id }}
+        run: |
+          python3 control/scripts/ci/nightly_assets.py check-preview \
+            --consumer-repository "$CONSUMER" --test-run-id "$TEST_RUN_ID" \
+            --bundle "flow-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        if: steps.check.outputs.promote == 'true'
+        with:
+          registry: ${{ vars.PREVIEW_REGISTRY_HOST }}
+          username: ${{ secrets.REGISTRY_USER }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        if: steps.check.outputs.promote == 'true'
+      - name: Register the same digest under an immutable preview tag
+        if: steps.check.outputs.promote == 'true'
+        env:
+          SOURCE_IMAGE: ${{ steps.check.outputs.image }}
+          IMAGE_REPOSITORY: ${{ steps.check.outputs.image_repository }}
+          EXPECTED_DIGEST: ${{ steps.check.outputs.image_digest }}
+          CONFIGURED_REPOSITORY: ${{ vars.PREVIEW_IMAGE_REPOSITORY }}
+          UPSTREAM_RUN_ID: ${{ steps.check.outputs.upstream_run_id }}
+          TEST_RUN_ID: ${{ steps.resolve.outputs.test_run_id }}
+        run: |
+          set -Eeuo pipefail
+          test "$IMAGE_REPOSITORY" = "$CONFIGURED_REPOSITORY"
+          destination="${IMAGE_REPOSITORY}:preview-${UPSTREAM_RUN_ID}-test-${TEST_RUN_ID}"
+          docker buildx imagetools create --prefer-index=false -t "$destination" "$SOURCE_IMAGE"
+          actual="$(docker buildx imagetools inspect "$destination" --format '{{.Manifest.Digest}}')"
+          test "$actual" = "$EXPECTED_DIGEST"
+      - name: Publish prerelease wheels and preview pointer only
+        if: steps.check.outputs.promote == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONSUMER: ${{ github.repository }}
+          TEST_RUN_ID: ${{ steps.resolve.outputs.test_run_id }}
+        run: |
+          python3 control/scripts/ci/nightly_assets.py publish-preview \
+            --consumer-repository "$CONSUMER" --test-run-id "$TEST_RUN_ID" \
+            --bundle "flow-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"

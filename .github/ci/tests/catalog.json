@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "quality_scope": "minimum-regression",
+  "expected_ut": [
+    "tests/ut/test_patch_install.py::test_install_is_idempotent",
+    "tests/ut/test_patch_install.py::test_patches_actually_land"
+  ],
+  "expected_ops_file": "tests/e2e/test_native_activation.py",
+  "dtypes": ["float16", "bfloat16", "float32"],
+  "shapes": [[1, 64], [7, 130], [32, 4096]],
+  "runner_label": "8-ppu-m890p",
+  "reference_model": null,
+  "exclusions": []
+}

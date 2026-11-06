@@ -14,6 +14,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  ci-control-tests:
+    name: CI control contracts (Python 3.12)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    cache-mode: none
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+      - name: Validate preview control tools without device dependencies
+        run: |
+          python3 -B -m unittest discover -s tests -p 'test_nightly_assets.py' -q
+          python3 -B -m unittest discover -s tests -p 'test_deployment.py' -q
+          python3 -B -m unittest discover -s tests -p 'test_verify_installed.py' -q
+          python3 -B -m unittest discover -s tests -p 'test_workflow_contracts.py' -q
+          python3 -B scripts/ci/deployment.py validate-test-source --source .
+          bash -n scripts/ci/run_existing_tests.sh
+          bash -n scripts/ci/ppu_smoke.sh
+
   cpu-unit-tests:
     name: CPU UT (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest

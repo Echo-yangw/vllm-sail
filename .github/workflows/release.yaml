@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - '**'
+      - '!preview-*'
   workflow_dispatch:
     inputs:
       python_versions:

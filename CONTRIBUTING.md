@@ -147,6 +147,17 @@ Actions instead of the individual PPU build, pin UT, smoke and gate job checks.
 Keep the CPU and vLLM source checks required. Coordinate this ruleset change with
 the switch to on-demand PPU CI, after verifying the commands on the default branch.
 
+### Preview 镜像与 Dockerfile 检查
+
+新增 Preview 流程消费已成功完成的 accuracy nightly wheel，组装并验证镜像，
+只发布 Preview prerelease，不替代正式 `PPU CI` 或版本发布。配置、权限与首次启用
+步骤见[验证指南](docs/user_guide/verification_guide.md#preview-镜像与最小回归)。
+
+Dockerfile PR 自动执行 `dockerfile-static`；设备验证需要维护者从默认分支手动
+触发 `dockerfile-ci.yaml`，并通过 Environment 审批。它使用已有 Preview wheel，
+不验证 PR 修改后的 SAIL 源码，结果以独立 `dockerfile-ppu` status 报告。
+Preview 分发通道与前述 `ci-preview` 标签路线是不同用途，不共享门禁结果。
+
 ## Reporting issues
 
 Use the bug or feature request template in the repository's Issues tab. Bug

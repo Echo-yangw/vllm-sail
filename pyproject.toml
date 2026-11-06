@@ -52,6 +52,8 @@ Repository = "https://github.com/t-head/vllm-sail"
 
 [tool.setuptools_scm]
 write_to = "vllm_sail/_version.py"
+# Preview 分发标签不是包版本；保留其他标签的既有推导规则。
+git_describe_command = "git describe --dirty --tags --long --match *[0-9]* --exclude preview-*"
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: Apache-2.0
+# 使用已有 wheel 组装 Preview 镜像，不编译源码。
+# The build context must contain docker/ and wheelhouse/.
+# Install prebuilt wheels only; do not compile vLLM.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+COPY wheelhouse/ /opt/ci/wheelhouse/
+RUN python -m pip install --no-deps --force-reinstall \
+      /opt/ci/wheelhouse/vllm/*.whl \
+      /opt/ci/wheelhouse/vllm-sail/*.whl \
+    && python -m pip check \
+    && python -c "from importlib.metadata import version; print('vllm', version('vllm')); print('vllm-sail', version('vllm-sail'))"
+ENV VLLM_PLUGINS=ppu \
+    VLLM_SAIL_USE_PLA=1 \
+    VLLM_USE_RUST_FRONTEND=0 \
+    VLLM_USE_RUST_BENCH=0 \
+    PYTHONPYCACHEPREFIX=/tmp/pycache
+WORKDIR /tmp
+# BASE_IMAGE must provide pytest, matching SAIL SDK/Torch, and CUDA-compatible runtime dependencies.
+# Mount only devices, read-only test sources, and results; no Docker socket or host home.

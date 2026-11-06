@@ -1,0 +1,236 @@
+name: Nightly regression (minimum)
+# Daily regression of prebuilt wheels on persistent runners. Not full/BOM verification.
+on:
+  schedule:
+    - cron: '17 0 * * *'
+  workflow_dispatch:
+    inputs:
+      upstream_run_id:
+        description: 'Optional upstream main nightly run ID from the last 48 hours'
+        type: string
+        required: false
+        default: ''
+permissions:
+  contents: read
+  actions: read
+cache-mode: none
+concurrency:
+  group: nightly-regression-minimum
+  cancel-in-progress: false
+  queue: max
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Reject non-default-branch dispatches
+        env:
+          CURRENT_REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: test "$CURRENT_REF" = "refs/heads/$DEFAULT_BRANCH"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Validate deployment configuration before queuing a PPU runner
+        env:
+          PPU_TRANSITION_ENABLED: ${{ vars.PPU_TRANSITION_ENABLED }}
+          PREVIEW_REGISTRY_HOST: ${{ vars.PREVIEW_REGISTRY_HOST }}
+          PREVIEW_IMAGE_REPOSITORY: ${{ vars.PREVIEW_IMAGE_REPOSITORY }}
+          RUNTIME_BASE_IMAGE: ${{ vars.RUNTIME_BASE_IMAGE }}
+        run: |
+          python3 control/scripts/ci/deployment.py preflight --mode nightly \
+            --catalog control/.github/ci/tests/catalog.json --output plan.json
+      - name: Validate control tools
+        run: |
+          python3 -B -m unittest discover -s control/tests -p 'test_nightly_assets.py' -q
+          python3 -B -m unittest discover -s control/tests -p 'test_deployment.py' -q
+          python3 -B -m unittest discover -s control/tests -p 'test_verify_installed.py' -q
+          python3 -B -m unittest discover -s control/tests -p 'test_workflow_contracts.py' -q
+  prepare:
+    needs: preflight
+    environment: nightly-registry
+    runs-on: [self-hosted, Linux, X64, 8-ppu-m890p]
+    timeout-minutes: 90
+    outputs:
+      upstream_sha: ${{ steps.fetch.outputs.upstream_sha }}
+      upstream_run_id: ${{ steps.fetch.outputs.upstream_run_id }}
+      image: ${{ steps.candidate.outputs.image }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+      - name: Record deployment plan
+        env:
+          PPU_TRANSITION_ENABLED: ${{ vars.PPU_TRANSITION_ENABLED }}
+          PREVIEW_REGISTRY_HOST: ${{ vars.PREVIEW_REGISTRY_HOST }}
+          PREVIEW_IMAGE_REPOSITORY: ${{ vars.PREVIEW_IMAGE_REPOSITORY }}
+          RUNTIME_BASE_IMAGE: ${{ vars.RUNTIME_BASE_IMAGE }}
+        run: |
+          python3 control/scripts/ci/deployment.py preflight --mode nightly \
+            --catalog control/.github/ci/tests/catalog.json \
+            --output "flow-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/plan.json"
+      - name: Fetch upstream nightly wheels without rebuilding
+        id: fetch
+        env:
+          GH_TOKEN: ${{ secrets.UPSTREAM_ACTIONS_TOKEN || github.token }}
+          INPUT_RUN_ID: ${{ inputs.upstream_run_id }}
+          CONSUMER: ${{ github.repository }}
+        run: |
+          set -Eeuo pipefail
+          args=()
+          [[ -z "$INPUT_RUN_ID" ]] || args+=(--run-id "$INPUT_RUN_ID")
+          python3 control/scripts/ci/nightly_assets.py fetch-nightly \
+            --source-repository vllm-project/vllm-sail \
+            --workflow ppu-accuracy-nightly.yaml --branch main --include-published \
+            --consumer-repository "$CONSUMER" \
+            --output "flow-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" "${args[@]}"
+      - name: No package is blocked, not a passed regression
+        if: steps.fetch.outputs.available != 'true'
+        run: |
+          echo 'No successful, unexpired nightly wheel batch from the last 48 hours.' >&2
+          exit 2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: vllm-project/vllm-sail
+          ref: ${{ steps.fetch.outputs.upstream_sha }}
+          path: upstream
+          persist-credentials: false
+      - name: Verify package identity against reviewed vLLM pin
+        env:
+          SAIL_SHA: ${{ steps.fetch.outputs.upstream_sha }}
+        run: |
+          set -Eeuo pipefail
+          flow="flow-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test "$(git -C upstream rev-parse HEAD)" = "$SAIL_SHA"
+          python3 control/scripts/ci/deployment.py validate-test-source --source upstream
+          vllm_sha="$(tr -d '[:space:]' < control/.github/vllm-main-verified.commit)"
+          [[ "$vllm_sha" =~ ^[0-9a-f]{40}$ ]] || exit 2
+          python3 upstream/scripts/ci/ppu_wheel_manifest.py verify "$flow/wheelhouse" \
+            --vllm-commit "$vllm_sha" --sail-commit "$SAIL_SHA"
+          mkdir -p "$flow/context"
+          cp -R control/docker "$flow/context/docker"
+          cp -R "$flow/wheelhouse" "$flow/context/wheelhouse"
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ${{ vars.PREVIEW_REGISTRY_HOST }}
+          username: ${{ secrets.REGISTRY_USER }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Assemble preview candidate
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: flow-${{ github.run_id }}-${{ github.run_attempt }}/context
+          file: flow-${{ github.run_id }}-${{ github.run_attempt }}/context/docker/Dockerfile.ci
+          platforms: linux/amd64
+          build-args: BASE_IMAGE=${{ vars.RUNTIME_BASE_IMAGE }}
+          push: true
+          provenance: false
+          sbom: false
+          tags: ${{ vars.PREVIEW_IMAGE_REPOSITORY }}:candidate-${{ steps.fetch.outputs.upstream_run_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Record candidate digest
+        id: candidate
+        env:
+          BUILD_METADATA: ${{ steps.build.outputs.metadata }}
+          IMAGE_REPOSITORY: ${{ vars.PREVIEW_IMAGE_REPOSITORY }}
+          CONTROL_SHA: ${{ github.sha }}
+        run: |
+          set -Eeuo pipefail
+          flow="flow-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          printf '%s\n' "$BUILD_METADATA" > "$flow/build.json"
+          python3 control/scripts/ci/nightly_assets.py candidate \
+            --selection "$flow/selection.json" --wheels "$flow/wheelhouse" \
+            --build-metadata "$flow/build.json" --image-repository "$IMAGE_REPOSITORY" \
+            --control-sha "$CONTROL_SHA" --dockerfile control/docker/Dockerfile.ci \
+            --output "$flow/candidate.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nightly-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            flow-${{ github.run_id }}-${{ github.run_attempt }}/plan.json
+            flow-${{ github.run_id }}-${{ github.run_attempt }}/selection.json
+            flow-${{ github.run_id }}-${{ github.run_attempt }}/candidate.json
+            flow-${{ github.run_id }}-${{ github.run_attempt }}/wheelhouse/
+          if-no-files-found: error
+          retention-days: 14
+  test:
+    needs: prepare
+    environment: nightly-test
+    runs-on: [self-hosted, Linux, X64, 8-ppu-m890p]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: vllm-project/vllm-sail
+          ref: ${{ needs.prepare.outputs.upstream_sha }}
+          path: upstream
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: nightly-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: flow-${{ github.run_id }}-${{ github.run_attempt }}
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ${{ vars.PREVIEW_REGISTRY_HOST }}
+          username: ${{ secrets.REGISTRY_PULL_USER }}
+          password: ${{ secrets.REGISTRY_PULL_TOKEN }}
+      - name: Test exact candidate digest
+        env:
+          TEST_IMAGE: ${{ needs.prepare.outputs.image }}
+          SOURCE_DIR: ${{ github.workspace }}/upstream
+          WHEELS_DIR: ${{ github.workspace }}/flow-${{ github.run_id }}-${{ github.run_attempt }}/wheelhouse
+          RESULTS_DIR: ${{ github.workspace }}/flow-${{ github.run_id }}-${{ github.run_attempt }}/results
+          PPU_BOARD: ppu15
+        run: |
+          set -Eeuo pipefail
+          python3 control/scripts/ci/deployment.py validate-test-source --source upstream
+          docker pull "$TEST_IMAGE"
+          bash control/scripts/ci/run_existing_tests.sh
+      - name: Bind runtime and test-plan observations
+        run: |
+          set -Eeuo pipefail
+          flow="flow-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          python3 control/scripts/ci/deployment.py record-evidence \
+            --plan "$flow/plan.json" --runtime "$flow/results/runtime.json" \
+            --candidate "$flow/candidate.json" --output "$flow/deployment-evidence.json"
+      - name: Reject skips and missing test evidence
+        run: |
+          set -Eeuo pipefail
+          flow="flow-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          python3 control/scripts/ci/nightly_assets.py attest \
+            --candidate "$flow/candidate.json" --wheels "$flow/wheelhouse" \
+            --results "$flow/results" --test-run-id "$GITHUB_RUN_ID" \
+            --output "$flow/test-evidence.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nightly-tested-bundle-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            flow-${{ github.run_id }}-${{ github.run_attempt }}/plan.json
+            flow-${{ github.run_id }}-${{ github.run_attempt }}/deployment-evidence.json
+            flow-${{ github.run_id }}-${{ github.run_attempt }}/selection.json
+            flow-${{ github.run_id }}-${{ github.run_attempt }}/candidate.json
+            flow-${{ github.run_id }}-${{ github.run_attempt }}/test-evidence.json
+            flow-${{ github.run_id }}-${{ github.run_attempt }}/wheelhouse/
+            flow-${{ github.run_id }}-${{ github.run_attempt }}/results/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Preserve failure diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nightly-test-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: flow-${{ github.run_id }}-${{ github.run_attempt }}/results/
+          if-no-files-found: warn
+          retention-days: 14
