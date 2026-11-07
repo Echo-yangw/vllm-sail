@@ -28,6 +28,7 @@ from vllm_sail.models.qwen4_exp.ops.mxfp4 import (
     _E2M1_MAX,
     MXFP4_NUM_SCALE_BLOCKS,
     MXFP4_PACKED_HEAD_DIM,
+    MXFP4_PAGE_ROWS,
     MXFP4_SCALE_BYTES,
     _fp32x2_to_fp4x2,
 )
@@ -133,6 +134,7 @@ def _qsa_prepare_kernel(
     COMP_VALUE_BYTES: tl.constexpr,
     COMP_SCALE_BYTES: tl.constexpr,
     COMP_SCALE_BLOCKS: tl.constexpr,
+    COMP_PAGE_ROWS: tl.constexpr,
     # PPU MODIFICATION: end
 ):
     pid = tl.program_id(0)
@@ -411,20 +413,31 @@ def _qsa_prepare_kernel(
                     COMP_SCALE_BLOCKS,
                     D // COMP_SCALE_BLOCKS,
                 )
+                # Planar at page granularity, not block granularity. One page is
+                # COMP_PAGE_ROWS rows and the kernel reads its scales at
+                # ``page_base + COMP_PAGE_ROWS * COMP_VALUE_BYTES``, while a
+                # framework block spans COMP_PAGE_SIZE // COMP_PAGE_ROWS pages.
+                # Putting one scale plane per block instead would leave every
+                # page past the first reading scales out of the value plane, and
+                # the two granularities only coincide at one page per block --
+                # which the mamba hybrid block size forbids.
+                page = compressed_row // COMP_PAGE_ROWS
+                row_in_page = compressed_row % COMP_PAGE_ROWS
                 comp_base = (
                     compressed_cache_ptr
                     + compressed_block * compressed_cache_stride_block
+                    + page * COMP_PAGE_ROWS * (COMP_VALUE_BYTES + COMP_SCALE_BYTES)
                 )
                 tl.store(
-                    comp_base + compressed_row * COMP_VALUE_BYTES + packed_dims,
+                    comp_base + row_in_page * COMP_VALUE_BYTES + packed_dims,
                     packed,
                     mask=valid,
                 )
                 tl.store(
                     (
                         comp_base
-                        + COMP_PAGE_SIZE * COMP_VALUE_BYTES
-                        + compressed_row * COMP_SCALE_BYTES
+                        + COMP_PAGE_ROWS * COMP_VALUE_BYTES
+                        + row_in_page * COMP_SCALE_BYTES
                     ).to(tl.pointer_type(tl.int32)),
                     scale,
                     mask=valid,
@@ -539,6 +552,15 @@ def qsa_prepare(
     comp_value_bytes = (
         MXFP4_PACKED_HEAD_DIM if comp_is_fp4 else compressed_cache.shape[3]
     )
+    # The store below splits a framework block into whole FP4 pages. A partial
+    # trailing page would put its scale plane inside the next page's values.
+    if comp_is_fp4 and compressed_cache.shape[1] % MXFP4_PAGE_ROWS:
+        raise ValueError(
+            f"QSA MXFP4 pages hold {MXFP4_PAGE_ROWS} compressed rows, which must "
+            f"divide the {compressed_cache.shape[1]} rows per framework block; the "
+            f"QSA block size must be a multiple of "
+            f"{MXFP4_PAGE_ROWS} * compress_ratio"
+        )
     # PPU MODIFICATION: end
     num_tokens = q.shape[0]
     main_head_dim = main_kv_cache.shape[-1] // 2
@@ -628,6 +650,7 @@ def qsa_prepare(
         COMP_VALUE_BYTES=comp_value_bytes,
         COMP_SCALE_BYTES=MXFP4_SCALE_BYTES,
         COMP_SCALE_BLOCKS=MXFP4_NUM_SCALE_BLOCKS,
+        COMP_PAGE_ROWS=MXFP4_PAGE_ROWS,
         # PPU MODIFICATION: end
         IS_2D_POSITIONS=is_2d_positions,
         IS_K_MROPE=is_k_mrope,

@@ -226,13 +226,14 @@ def gather_qsa_fp4_keys(
     the columns it writes are already request-relative.
 
     ``kv_cache`` is the bound compressed cache and ``block_table`` the framework
-    block table, both in framework-block geometry rather than re-paged onto
-    64-row FP4 pages. ``_qsa_prepare_kernel`` takes its page size from
-    ``compressed_cache.shape[1]``, so it stores a framework block planar: every
-    row's 64 value bytes, then every row's 4 UE8M0 scale bytes. Reading that
-    back as 68 contiguous bytes per row would take the scales out of the value
-    plane and shift every row past the first, so the two planes are gathered at
-    their own block-relative offsets.
+    block table, both left in framework-block geometry rather than re-paged onto
+    64-row FP4 pages -- re-paging with ``as_qsa_fp4_pages`` would copy the whole
+    cache, because the block pitch below makes it non-contiguous. A framework
+    block spans ``qsa_fp4_pages_per_block(block_rows)`` of those pages, and each
+    page is planar on its own: 64 rows of 64 value bytes, then 64 rows of 4
+    UE8M0 scale bytes. Reading a row back as 68 contiguous bytes would take its
+    scale out of the value plane, so the two planes are gathered at their own
+    page-relative offsets.
 
     The cache is one slice of the combined hybrid KV block, so its block pitch
     ``stride(0)`` also spans the other caches and is much larger than the
@@ -251,6 +252,12 @@ def gather_qsa_fp4_keys(
         raise ValueError(
             "QSA MXFP4 gather needs the bound compressed cache as "
             f"[blocks, rows, 1, {MXFP4_ROW_BYTES}], got {tuple(kv_cache.shape)}"
+        )
+    if block_rows % MXFP4_PAGE_ROWS:
+        raise ValueError(
+            f"QSA MXFP4 pages hold {MXFP4_PAGE_ROWS} rows, which must divide the "
+            f"{block_rows} compressed rows per framework block; the QSA block "
+            f"size must be a multiple of {MXFP4_PAGE_ROWS} * compress_ratio"
         )
     stride_block = kv_cache.stride(0)
     block_bytes = block_rows * row_bytes
@@ -290,11 +297,14 @@ def gather_qsa_fp4_keys(
     packed_row.clamp_(0, block_table.shape[1] * block_rows - 1)
     block_ids = block_table[packed_req, packed_row // block_rows].long()
     slot = packed_row % block_rows
-    value_base = block_ids * stride_block + slot * MXFP4_PACKED_HEAD_DIM
+    row_in_page = slot % MXFP4_PAGE_ROWS
+    page_bytes = MXFP4_PAGE_ROWS * row_bytes
+    page_base = block_ids * stride_block + (slot // MXFP4_PAGE_ROWS) * page_bytes
+    value_base = page_base + row_in_page * MXFP4_PACKED_HEAD_DIM
     scale_base = (
-        block_ids * stride_block
-        + block_rows * MXFP4_PACKED_HEAD_DIM
-        + slot * MXFP4_SCALE_BYTES
+        page_base
+        + MXFP4_PAGE_ROWS * MXFP4_PACKED_HEAD_DIM
+        + row_in_page * MXFP4_SCALE_BYTES
     )
     values = flat[
         value_base[:, None]

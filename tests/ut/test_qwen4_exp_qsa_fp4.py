@@ -141,13 +141,15 @@ def test_expand_qsa_fp4_block_table(mxfp4):
 def test_gather_qsa_fp4_keys_reads_the_planar_block(
     mxfp4, block_rows, bound_view, pitch_pad, offset
 ):
-    """Split a planar framework block back into per-row values and scales.
+    """Split planar FP4 pages back into per-row values and scales.
 
-    ``_qsa_prepare_kernel`` takes its page size from ``compressed_cache.shape[1]``,
-    so a framework block spanning several FP4 pages holds one scale plane after
-    *all* of the block's value rows. ``--block-size 1024`` binds 256 compressed
-    rows per block, where reading 68 contiguous bytes per row shifts every row
-    past the first and takes the scales out of the value plane.
+    ``_qsa_prepare_kernel`` stores each 64-row page planar -- the page's value
+    rows, then its scale rows -- because DeepGEMM's paged kernel reads scales at
+    ``page_base + page_kv * head_dim``. ``--block-size 1024`` binds 256 compressed
+    rows per block, i.e. four such pages, where reading 68 contiguous bytes per
+    row shifts every row past the first and takes the scales out of the value
+    plane. The requests below are long enough to cross page boundaries, which is
+    what distinguishes page granularity from block granularity.
 
     The compressed cache is one slice of the combined hybrid KV block, so its
     block pitch also spans the other caches: production binds 256 rows with
@@ -155,15 +157,15 @@ def test_gather_qsa_fp4_keys_reads_the_planar_block(
     nonzero ``storage_offset``, both of which the writer shares because it steps
     blocks by ``stride(0)`` from ``data_ptr()``.
 
-    Capacity past ``cu_seqlens[-1]`` aliases the last request, which is safe
-    because every row end stays inside its own request; assert it rather than
-    leave it implicit. ``bound_view`` reproduces ``bind_kv_cache``'s transpose,
-    whose dim-2 stride is the block pitch rather than 0.
+    ``bound_view`` reproduces ``bind_kv_cache``'s transpose, whose dim-2 stride is
+    the block pitch rather than 0.
     """
     import torch
 
     packed, row_bytes = mxfp4.MXFP4_PACKED_HEAD_DIM, mxfp4.MXFP4_ROW_BYTES
-    num_blocks, capacity = 8, 8
+    page_rows = mxfp4.MXFP4_PAGE_ROWS
+    pages_per_block = mxfp4.qsa_fp4_pages_per_block(block_rows)
+    num_blocks = 8
     rows = num_blocks * block_rows
     block_bytes = block_rows * row_bytes
     pitch = block_bytes + pitch_pad
@@ -172,10 +174,12 @@ def test_gather_qsa_fp4_keys_reads_the_planar_block(
         torch.uint8
     )
     scale_bytes = logical.view(torch.uint8).view(rows, mxfp4.MXFP4_SCALE_BYTES)
-    blocks = torch.cat(
-        [value_bytes.reshape(num_blocks, -1), scale_bytes.reshape(num_blocks, -1)],
-        dim=1,
+    # Per (block, page): every value row of the page, then every scale row.
+    values = value_bytes.reshape(num_blocks, pages_per_block, page_rows * packed)
+    scales = scale_bytes.reshape(
+        num_blocks, pages_per_block, page_rows * mxfp4.MXFP4_SCALE_BYTES
     )
+    blocks = torch.cat([values, scales], dim=2).reshape(num_blocks, block_bytes)
 
     span = (num_blocks - 1) * pitch + block_bytes
     backing = torch.full((span + offset,), 0xA5, dtype=torch.uint8)
@@ -188,16 +192,21 @@ def test_gather_qsa_fp4_keys_reads_the_planar_block(
     )
 
     block_table = torch.tensor([[7, 2, 0], [5, 1, 3]], dtype=torch.int32)
-    cu_seqlens = torch.tensor([0, 3, 5], dtype=torch.int64)
+    lengths = (70, 60)
+    cu_seqlens = torch.tensor([0, lengths[0], sum(lengths)], dtype=torch.int64)
+    capacity = int(cu_seqlens[-1])
     k_values, k_sf = mxfp4.gather_qsa_fp4_keys(cache, block_table, cu_seqlens, capacity)
 
     assert k_values.shape == (capacity, packed) and k_values.dtype == torch.int8
     assert k_sf.shape == (capacity,) and k_sf.dtype == torch.int32
-    # Rows 0-2 of request 0 come from block 7, rows 0-1 of request 1 from block 5,
-    # and the three spare slots keep walking block 5.
-    assert k_sf.tolist() == [7 * block_rows + r for r in (0, 1, 2)] + [
-        5 * block_rows + r for r in (0, 1, 2, 3, 4)
+    # Request 0 walks block_table[0] and request 1 walks block_table[1], each from
+    # its own row 0, so the expected slot is whichever block the row falls in.
+    want_sf = [
+        int(block_table[req, row // block_rows]) * block_rows + row % block_rows
+        for req, length in enumerate(lengths)
+        for row in range(length)
     ]
+    assert k_sf.tolist() == want_sf
     for slot, logical_row in enumerate(k_sf.tolist()):
         want = ((logical_row + torch.arange(packed)) & 0xFF).to(torch.uint8)
         assert torch.equal(k_values[slot].view(torch.uint8), want)
@@ -214,6 +223,22 @@ def test_gather_qsa_fp4_keys_rejects_a_shape_it_cannot_address(mxfp4, shape):
     block_table = torch.zeros((1, shape[0]), dtype=torch.int32)
     cu_seqlens = torch.tensor([0, 1], dtype=torch.int64)
     with pytest.raises(ValueError, match=r"\[blocks, rows, 1, 68\]"):
+        mxfp4.gather_qsa_fp4_keys(cache, block_table, cu_seqlens, 1)
+
+
+def test_gather_qsa_fp4_keys_rejects_a_partial_trailing_page(mxfp4):
+    """A block whose rows do not fill whole pages has no valid scale plane.
+
+    Both planes of the last partial page would land inside the next page, and
+    ``as_qsa_fp4_pages`` rejects the same geometry, so the paged path could never
+    read what the gather would write.
+    """
+    import torch
+
+    cache = torch.zeros((2, 100, 1, mxfp4.MXFP4_ROW_BYTES), dtype=torch.uint8)
+    block_table = torch.zeros((1, 2), dtype=torch.int32)
+    cu_seqlens = torch.tensor([0, 1], dtype=torch.int64)
+    with pytest.raises(ValueError, match="must divide"):
         mxfp4.gather_qsa_fp4_keys(cache, block_table, cu_seqlens, 1)
 
 
