@@ -96,6 +96,31 @@ if not NVTX_PROFILE:
         pass
 
 
+def _sanitize_topk_ids_for_fused_align(topk_ids: torch.Tensor) -> torch.Tensor:
+    """Map the ``-1`` padding sentinel to expert 0 for DeepGEMM's fused align.
+
+    ``VLLM_MOE_SKIP_PADDING`` is on by default and makes the routers force CUDA
+    graph / DP padding rows to ``topk_ids == -1``. The nopad path tolerates this
+    because both ``ep_scatter`` and ``ep_gather`` guard every lane with
+    ``expert_id >= 0``. DeepGEMM's ``moe_align_block_size`` kernels do not: they
+    index their per-expert counters with the raw id (``warp_counts[warp_id *
+    kNumGroups + eid]`` in the warp-ordered kernel, ``atomicAdd(&smem_counts[eid],
+    1)`` in the multi-kernel one), so a single ``-1`` walks out of shared memory
+    and corrupts every expert's count. ``m_rows`` then no longer sums to ``numel``
+    while ``M_sum`` still does, so the fused GEMM1 leaves the tail of its output
+    buffer untouched and GEMM2 reads stale workspace data back.
+
+    Remapping to expert 0 wastes a few rows but is never wrong: the routers
+    already zero ``topk_weights`` on those rows, and the unpermute step keeps
+    receiving the original ``topk_ids``, so ``ep_gather``'s ``>= 0`` guard still
+    drops them. Same convention as ``prepare_finalize/moonep.py``.
+
+    Only the ids handed to ``moe_align_block_size`` may be sanitized -- callers
+    must keep passing the original ``topk_ids`` everywhere else.
+    """
+    return topk_ids.clamp(min=0)
+
+
 def _valid_deep_gemm_shape(M: int, N: int, K: int) -> bool:
     align, align_k = get_mk_alignment_for_contiguous_layout()
     return align <= M and N % align == 0 and K % align_k == 0
@@ -754,6 +779,9 @@ class PPUDeepGemmExpertsW4FA16MMA(PPUDeepGemmExperts):
         if use_fused_path:
             # ── fused path: moe_align + GEMM1 fused (gather read) ──
             logger.info_once("Using PPU DeepGEMM fused moe.")
+            # The align kernels index per-expert counters with the raw id, so the
+            # routers' -1 padding sentinel must never reach them.
+            align_topk_ids = _sanitize_topk_ids_for_fused_align(topk_ids)
             (
                 configs_list,
                 m_rows,
@@ -765,7 +793,7 @@ class PPUDeepGemmExpertsW4FA16MMA(PPUDeepGemmExperts):
             ) = moe_align_block_size(
                 a1q,
                 w1,
-                topk_ids,
+                align_topk_ids,
                 perchannel_quant=False,
             )
 
@@ -1050,6 +1078,9 @@ class PPUDeepGemmExpertsMXFP4(mk.FusedMoEExpertsModular):
                 f"and numel={topk_ids.numel()}"
             )
             logger.info_once("Using PPU DeepGEMM fused moe (mxfp4).")
+            # The align kernels index per-expert counters with the raw id, so the
+            # routers' -1 padding sentinel must never reach them.
+            align_topk_ids = _sanitize_topk_ids_for_fused_align(topk_ids)
             (
                 configs_list,
                 m_rows,
@@ -1061,7 +1092,7 @@ class PPUDeepGemmExpertsMXFP4(mk.FusedMoEExpertsModular):
             ) = moe_align_block_size(
                 a1q,
                 w1,
-                topk_ids,
+                align_topk_ids,
                 perchannel_quant=False,
             )
             experts_for_rows = m_rows
@@ -1384,6 +1415,9 @@ class PPUDeepGemmExpertsMXFP4W4A8(mk.FusedMoEExpertsModular):
         if use_fused_path:
             # ── fused path: moe_align + GEMM1 fused (gather read) ──
             logger.info_once("Using PPU DeepGEMM fused moe (w4a8).")
+            # The align kernels index per-expert counters with the raw id, so the
+            # routers' -1 padding sentinel must never reach them.
+            align_topk_ids = _sanitize_topk_ids_for_fused_align(topk_ids)
             (
                 configs_list,
                 m_rows,
@@ -1395,7 +1429,7 @@ class PPUDeepGemmExpertsMXFP4W4A8(mk.FusedMoEExpertsModular):
             ) = moe_align_block_size(
                 a1q,
                 w1,
-                topk_ids,
+                align_topk_ids,
                 perchannel_quant=False,
             )
             experts_for_rows = m_rows
