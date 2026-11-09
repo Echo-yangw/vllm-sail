@@ -1331,7 +1331,7 @@ def test_stdlib_only_python310_syntax_and_physical_line_budget():
     from pathlib import Path
 
     source = Path(module().__file__).read_text()
-    assert len(source.splitlines()) <= 650
+    assert len(source.splitlines()) <= 675
     tree = ast.parse(source, feature_version=(3, 10))
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -1644,6 +1644,55 @@ def test_ci_reuse_files_cover_controller_and_reachable_reusable_workflows():
             if uses.startswith("./.github/workflows/"):
                 pending.append(uses[2:])
     assert controller_path.relative_to(repo_root).as_posix() in module().CI_REUSE_FILES
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ".github/workflows/_ppu-upstream-reuse.yaml",
+        ".github/workflows/upstream-reuse.yaml",
+        "scripts/ci/ppu_upstream_reuse.sh",
+        "scripts/ci/ppu_runtime_container.sh",
+        "scripts/ci/ppu_image_stack.py",
+        "requirements/upstream-reuse.txt",
+        "tests/upstream_reuse/REUSE_MANIFEST.toml",
+        "tests/upstream_reuse/conftest.py",
+        "tests/upstream_reuse/_reuse_harness.py",
+        "tests/upstream_reuse/test_reuse_direct.py",
+        "tests/upstream_reuse/test_reuse_adapted.py",
+    ],
+)
+def test_reuse_acceptance_inputs_are_in_the_ci_equivalence_inventory(path):
+    assert path in module().CI_REUSE_FILES
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["tests/upstream_reuse/new_dependencies.py", "tests/support/new_helper.py"],
+)
+@pytest.mark.parametrize("deleted", [False, True])
+def test_new_or_deleted_reuse_inputs_block_old_successful_ci(
+    path, deleted, github_output
+):
+    control, gh = reuse_setup(
+        pr_files=[{"filename": "csrc/kernel.cu", "status": "modified"}],
+        candidates=[run(555, OLD, conclusion="success", head_sha="d" * 40)],
+        main_changes={path: None if deleted else tree_entry(path, oid=CHANGED)},
+    )
+    assert validate_pair(control, gh, github_output) == reuse_result("none")
+
+
+def test_old_success_without_upstream_reuse_job_is_not_qualified(github_output):
+    path = ".github/workflows/_ppu-upstream-reuse.yaml"
+    candidate = run(555, OLD, conclusion="success", head_sha="d" * 40)
+    control, gh = reuse_setup(
+        candidates=[candidate],
+        pr_files=[{"filename": "csrc/kernel.cu", "status": "modified"}],
+    )
+    donor = base_tree()
+    donor.pop(path)
+    add_tree(gh, "d" * 40, tree_payload(list(donor.values())))
+    assert validate_pair(control, gh, github_output) == reuse_result("none")
 
 
 def test_tree_entries_preserve_leaf_identity_skip_directories_and_cache():

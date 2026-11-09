@@ -21,6 +21,7 @@ bare host.
 
 from __future__ import annotations
 
+import json
 import socket
 from pathlib import Path
 
@@ -467,3 +468,275 @@ def test_the_runner_decides_before_spawning_a_subprocess(
     assert result.collected == 0
     assert result.errors == 0
     assert result.tail == result.environment_gap
+
+
+def passing_result(**changes: object) -> RunResult:
+    result = RunResult(0, 2, 2, 0, 0, 0, (), "")
+    return result._replace(**changes)
+
+
+@pytest.mark.parametrize(
+    "changes,message",
+    [
+        ({"returncode": 5, "collected": 0, "passed": 0}, "status 5"),
+        ({"passed": 0, "skipped": 2}, "no upstream test passed"),
+        ({"errors": 1}, "import/collection errors"),
+        ({"returncode": 1}, "without matching test evidence"),
+        ({"environment_gap": "missing tokenizer cache"}, "missing tokenizer cache"),
+        ({"skipped": 1}, "lack matching node/reason evidence"),
+    ],
+)
+def test_strict_results_fail_without_real_coverage(changes, message):
+    result = passing_result(**changes)
+    error = harness.strict_result_error(make_entry("tests/test_example.py"), result)
+    assert error is not None and message in error
+
+
+def test_strict_missing_dependency_is_not_a_successful_skip():
+    error = harness.strict_result_error(
+        make_entry("tests/test_example.py"), make_result()
+    )
+    assert error is not None and "tblib" in error
+
+
+def test_strict_clean_execution_passes():
+    assert (
+        harness.strict_result_error(
+            make_entry("tests/test_example.py"), passing_result()
+        )
+        is None
+    )
+
+
+def test_strict_collection_minimum_is_retained():
+    error = harness.strict_result_error(
+        make_entry("tests/test_example.py", min_tests=3), passing_result()
+    )
+    assert error is not None and "expected at least 3" in error
+
+
+def test_strict_allowed_skip_requires_node_reason_and_bounded_count():
+    entry = make_entry(
+        "tests/test_example.py",
+        allowed_skips=(
+            {"nodeid": "tests.example::test_*", "reason": "capability", "max_count": 1},
+        ),
+    )
+    result = passing_result(
+        collected=2,
+        passed=1,
+        skipped=1,
+        skipped_cases=(
+            ("tests.example::test_shape", "missing capability", "pytest.skip"),
+        ),
+    )
+    assert harness.strict_result_error(entry, result) is None
+    different = result._replace(
+        skipped_cases=(
+            ("tests.example::test_shape", "missing dependency", "pytest.skip"),
+        )
+    )
+    assert "undeclared" in harness.strict_result_error(entry, different)
+    overflow = result._replace(
+        collected=3,
+        skipped=2,
+        skipped_cases=result.skipped_cases + result.skipped_cases,
+    )
+    assert "count exceeded" in harness.strict_result_error(entry, overflow)
+
+
+def test_strict_all_skip_fails_even_if_skip_rules_match():
+    entry = make_entry(
+        "tests/test_example.py",
+        allowed_skips=({"nodeid": "*", "reason": "capability", "max_count": 2},),
+    )
+    result = passing_result(
+        passed=0,
+        skipped=2,
+        skipped_cases=(
+            ("test_a", "capability", "pytest.skip"),
+            ("test_b", "capability", "pytest.skip"),
+        ),
+    )
+    assert "no upstream test passed" in harness.strict_result_error(entry, result)
+
+
+def test_strict_declared_xfail_does_not_allow_an_ordinary_skip():
+    entry = make_entry("tests/test_example.py", mode="adapted", xfail=("known",))
+    result = passing_result(
+        passed=1,
+        skipped=1,
+        skipped_cases=(("tests.example::test_known", "known bug", "pytest.xfail"),),
+    )
+    assert harness.strict_result_error(entry, result) is None
+    ordinary = result._replace(
+        skipped_cases=(("tests.example::test_known", "missing library", "pytest.skip"),)
+    )
+    assert "undeclared" in harness.strict_result_error(entry, ordinary)
+    assert "import/collection" in harness.strict_result_error(
+        entry, result._replace(errors=1)
+    )
+
+
+def test_strict_declared_failure_still_requires_a_passing_case():
+    entry = make_entry("tests/test_example.py", mode="adapted", xfail=("known",))
+    result = passing_result(
+        returncode=1, passed=1, failures=1, failed_names=("test_known",)
+    )
+    assert harness.strict_result_error(entry, result) is None
+    assert "no upstream test passed" in harness.strict_result_error(
+        entry, result._replace(passed=0)
+    )
+    assert "unexpected" in harness.strict_result_error(
+        entry, result._replace(failed_names=("test_other",))
+    )
+
+
+def test_junit_preserves_skip_evidence(tmp_path):
+    report = tmp_path / "report.xml"
+    report.write_text(
+        '<testsuites><testsuite tests="3" skipped="1">'
+        '<testcase classname="tests.example" name="test_pass"/>'
+        '<testcase classname="tests.example" name="test_skip">'
+        '<skipped type="pytest.skip" message="unsupported capability"/></testcase>'
+        '<testcase classname="tests.example" name="test_fail"><failure/></testcase>'
+        "</testsuite></testsuites>"
+    )
+    collected, failures, errors, skipped, names, cases = harness._parse_junit(report)
+    assert (collected, failures, errors, skipped) == (3, 1, 0, 1)
+    assert names == ["tests.example::test_fail"]
+    assert cases == [
+        ("tests.example::test_skip", "unsupported capability", "pytest.skip")
+    ]
+
+
+def test_strict_report_rejects_unexecuted_entries_and_separates_parked(tmp_path):
+    entry = make_entry("tests/test_example.py")
+    parked = make_entry(
+        "tests/test_parked.py", skip_reason="offline tokenizer cache is not provisioned"
+    )
+    runner = UpstreamRunner(tmp_path, strict=True, report_dir=tmp_path / "reports")
+    report = runner.write_report([entry, parked])
+    assert not report["qualified"]
+    assert report["active_entries"] == 1
+    assert [row["status"] for row in report["entries"]] == ["not_run", "parked"]
+    runner.complete(entry, passing_result())
+    report = runner.write_report([entry, parked])
+    assert report["qualified"] and report["passed_entries"] == 1
+    assert json.loads((tmp_path / "reports/report.json").read_text()) == report
+    assert "810e" in report["deferred_targets"]
+
+
+def test_local_optional_results_never_establish_ci_qualification(tmp_path):
+    entry = make_entry("tests/test_example.py")
+    runner = UpstreamRunner(tmp_path)
+    runner.complete(entry, passing_result())
+    assert not runner.write_report([entry])["qualified"]
+
+
+def test_report_filters_entries_by_actual_target(tmp_path):
+    cpu = make_entry("tests/test_cpu.py")
+    m890 = make_entry("tests/test_m890.py", chips=("890p",))
+    runner = UpstreamRunner(tmp_path, strict=True, execution_target="890p")
+    runner.complete(m890, passing_result())
+    report = runner.write_report([cpu, m890])
+    assert report["qualified"] and report["active_entries"] == 1
+    assert report["entries"][0]["status"] == "not_applicable"
+
+
+def test_strict_environment_gap_is_recorded_before_failing(
+    upstream, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(harness, "hub_reachable", lambda *a, **k: (False, "offline"))
+    runner = UpstreamRunner(upstream, strict=True, report_dir=tmp_path / "reports")
+    entry = make_entry("tests/config/test_multimodal_config.py")
+    with pytest.raises(AssertionError, match="Hugging Face"):
+        runner.run(entry)
+    report = runner.write_report([entry])
+    assert not report["qualified"] and report["entries"][0]["status"] == "failed"
+
+
+def test_strict_runtime_view_cannot_shadow_installed_packages(upstream, monkeypatch):
+    (upstream / "vllm").mkdir()
+    (upstream / "vllm/__init__.py").write_text(
+        "raise RuntimeError('source package imported')"
+    )
+    monkeypatch.setenv("PYTHONPATH", str(upstream))
+    runner = UpstreamRunner(upstream, strict=True, execution_target="890p")
+    entry = make_entry(
+        "tests/v1/sample/test_sampler.py", env={"PYTHONPATH": str(upstream)}
+    )
+    try:
+        root = runner.runtime_root()
+        assert (root / entry.path).is_file()
+        assert not (root / "vllm").exists()
+        env = runner.build_env(entry)
+        assert env["PYTHONPATH"] == str(root)
+        assert env["VLLM_UPSTREAM_REUSE_TARGET"] == "890p"
+        command = runner.build_command(entry, root / "report.xml")
+        assert command[:2] == [harness.sys.executable, "-c"]
+        assert "installed wheel" in command[2]
+    finally:
+        runner.close()
+
+
+def test_reviewed_apc_skip_retains_source_location_and_count_limit(tmp_path):
+    entry = next(e for e in harness.load_manifest() if e.id == "v1_sample_logprobs")
+    report = tmp_path / "report.xml"
+    report.write_text(
+        '<testsuites><testsuite tests="2" skipped="1">'
+        '<testcase name="test_pass"/>'
+        '<testcase classname="tests.v1.sample.test_logprobs" '
+        'name="test_get_logprobs_and_prompt_logprobs[True-0.0-NONE]">'
+        '<skipped type="pytest.skip" message="Skipped">'
+        "/runtime/tests/v1/sample/test_logprobs.py:360: Skipped"
+        "</skipped></testcase></testsuite></testsuites>"
+    )
+    collected, failures, errors, skipped, names, cases = harness._parse_junit(report)
+    result = RunResult(
+        0,
+        collected,
+        1,
+        failures,
+        errors,
+        skipped,
+        tuple(names),
+        "",
+        skipped_cases=tuple(cases),
+    )
+    assert harness.strict_result_error(entry, result) is None
+    overflow = result._replace(
+        collected=9, skipped=8, skipped_cases=result.skipped_cases * 8
+    )
+    assert "count exceeded" in harness.strict_result_error(entry, overflow)
+    wrong_reason = result._replace(
+        skipped_cases=((cases[0][0], "missing library", "pytest.skip"),)
+    )
+    assert "undeclared" in harness.strict_result_error(entry, wrong_reason)
+
+
+def test_strict_runner_retains_xml_and_logs(upstream, tmp_path, monkeypatch):
+    entry = make_entry("tests/v1/sample/test_sampler.py")
+
+    def execute(command, **kwargs):
+        xml = Path(
+            next(
+                arg.split("=", 1)[1] for arg in command if arg.startswith("--junitxml=")
+            )
+        )
+        xml.write_text(
+            '<testsuites><testsuite tests="1" skipped="0"><testcase name="test_pass"/></testsuite></testsuites>'
+        )
+        assert kwargs["cwd"] != str(upstream)
+        return harness.subprocess.CompletedProcess(command, 0, "executed", "")
+
+    monkeypatch.setattr(harness, "hub_reachable", lambda *a, **k: (True, ""))
+    monkeypatch.setattr(harness.subprocess, "run", execute)
+    runner = UpstreamRunner(upstream, strict=True, report_dir=tmp_path / "reports")
+    try:
+        result = runner.run(entry)
+        assert result.passed == 1
+        assert (tmp_path / f"reports/{entry.id}.xml").is_file()
+        assert (tmp_path / f"reports/{entry.id}.log").read_text() == "executed\n"
+    finally:
+        runner.close()

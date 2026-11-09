@@ -98,6 +98,38 @@ issue and fails the job. Installation failure stops before that report step.
 This scheduled check does not replace PR checks, and none of these public CPU
 jobs runs PPU inference or `tests/e2e`.
 
+### Upstream test reuse
+
+The upstream reuse CPU job runs on PRs, pushes and manual dispatch, without a
+nightly schedule. It installs the dedicated `requirements/upstream-reuse.txt`
+tooling and a device-less upstream wheel, then selects the CPU platform with
+`VLLM_TARGET_DEVICE=cpu`. This is an upstream runtime diagnostic, not PPU
+qualification. `requirements/dev.txt` remains hardware-free.
+
+In a prepared CPU environment with the exact upstream checkout:
+
+```bash
+VLLM_TARGET_DEVICE=cpu VLLM_SOURCE_ROOT=/path/to/pinned/vllm \
+  python -m pytest tests/upstream_reuse -q -rs \
+  -m "upstream_source and not ppu" --require-upstream-source \
+  --strict-upstream-reuse --upstream-reuse-target=cpu \
+  --upstream-reuse-report-dir=/path/to/reuse-report
+```
+
+Strict reuse requires each active entry to collect its declared minimum and
+actually pass at least one upstream case. Missing dependencies, import errors,
+empty runs and undeclared skips fail CI. Parked entries do not count as coverage.
+Reviewed skips identify the node, reason and maximum count; an all-skipped entry
+still fails. Reports retain per-entry JUnit XML, logs and execution counts.
+
+The PPU pipeline consumes validated wheels for single-card M890 reuse, records
+source/wheel/upstream identities and verifies installed-package imports and the
+SDK/Torch stack. 810E is explicitly deferred because no CI runner is available.
+The authorized `/ci run` dispatcher uses default-branch workflow definitions;
+new reusable-job wiring becomes active after merge. Before merge, the existing
+`ci-preview` PR path can execute the changed pipeline for validation. Neither a
+CPU green check nor a deferred device establishes M890 or 810E correctness.
+
 ## 3. Run device correctness tests
 
 In the PPU environment, install `requirements/dev.txt`. Use an editable native

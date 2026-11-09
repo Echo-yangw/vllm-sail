@@ -11,8 +11,8 @@ Two layers live here:
 2. **Parameterized execution** of every ``direct`` entry: each upstream test
    file is run verbatim, as an isolated pytest subprocess rooted at the pinned
    checkout, inside the ambient vllm-sail runtime. "Direct" means zero edits and
-   zero expected failures -- the file must come up green (all-pass or
-   all-skipped-by-upstream), otherwise a genuine regression is reported.
+   zero expected failures. Strict CI requires actual passing tests and only
+   permits reviewed, bounded skips; optional local runs remain permissive.
 
 Without ``VLLM_SOURCE_ROOT`` the directory conftest skips every item; with a
 checkout but no installed vLLM/torch the ``upstream_runner`` fixture skips. So a

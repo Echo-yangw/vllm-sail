@@ -23,7 +23,7 @@
 #                            applied by test_reuse_adapted.py
 #   chips       applicable targets, subset of {"cpu", "810e", "890p"}.
 #               "cpu" entries are collected by the PR CPU lane; entries with no
-#               "cpu" are marked `ppu` and only run in the nightly device lane.
+#               "cpu" are marked `ppu` and run in the authorized device lane.
 #   category    free-form grouping (params / config / core / sample / ...)
 #   reason      why this entry is direct|adapted (audited on every bump)
 #   min_tests   minimum number of upstream test cases that must be collected;
@@ -37,6 +37,7 @@
 #               failure is a real regression
 #   skip_reason when set, the entry is skipped entirely with this reason (used
 #               to park an entry whose upstream prerequisites are not yet met)
+#   allowed_skips nodeid/reason/max_count rules for reviewed upstream skips
 
 [meta]
 schema = 1
@@ -238,3 +239,6 @@ category = "sample"
 reason = "Logprob end-to-end path uses cleanup_dist_env_and_memory + cudagraph reservation; needs a real device (PPU lane only), with ROCm/XPU-specific nodes deselected."
 keywords = "not rocm and not xpu"
 min_tests = 1
+allowed_skips = [
+    { nodeid = "tests.v1.sample.test_logprobs::test_get_logprobs_and_prompt_logprobs*", reason = "test_logprobs.py:360: Skipped", max_count = 7 },
+]

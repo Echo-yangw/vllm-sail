@@ -21,8 +21,18 @@ TREE_MODES = "100644:blob 100755:blob 120000:blob 040000:tree 160000:commit".spl
 CI_REUSE_FILES = set(
     f".github/workflows/{WORKFLOW} .github/workflows/ppu-build-and-test.yaml "
     ".github/workflows/_ppu-build.yaml .github/workflows/_ppu-pin-ut.yaml "
-    ".github/workflows/_ppu-model-tests.yaml scripts/ci/ppu_ci_command.py".split()
+    ".github/workflows/_ppu-model-tests.yaml .github/workflows/_ppu-upstream-reuse.yaml "
+    ".github/workflows/upstream-reuse.yaml scripts/ci/ppu_ci_command.py "
+    "scripts/ci/ppu_runtime_container.sh scripts/ci/ppu_runtime_image.sh "
+    "scripts/ci/ppu_upstream_reuse.sh scripts/ci/ppu_image_stack.py "
+    "scripts/ci/ppu_wheel_manifest.py requirements/upstream-reuse.txt "
+    "tests/conftest.py tests/__init__.py pyproject.toml "
+    "tests/upstream_reuse/conftest.py tests/upstream_reuse/_reuse_harness.py "
+    "tests/upstream_reuse/REUSE_MANIFEST.toml "
+    "tests/upstream_reuse/test_reuse_direct.py "
+    "tests/upstream_reuse/test_reuse_adapted.py".split()
 )
+CI_REUSE_PREFIXES = ("tests/upstream_reuse/", "tests/support/")
 SKIP_PPU_PREFIXES = ("docs/", ".github/ISSUE_TEMPLATE/")
 SKIP_PPU_FILES = set(
     ".github/pull_request_template.md .gitignore .pre-commit-config.yaml AGENTS.md "
@@ -324,7 +334,10 @@ class Controller:
             source = TITLE.fullmatch(run["display_title"])[2]
             source_matches = self.trees_match(source, sha, wheel_output_relevant)
             if source_matches and self.trees_match(
-                run["head_sha"], self.env["GITHUB_SHA"], CI_REUSE_FILES.__contains__
+                run["head_sha"],
+                self.env["GITHUB_SHA"],
+                lambda path: path in CI_REUSE_FILES
+                or path.startswith(CI_REUSE_PREFIXES),
             ):
                 return "full", str(run["id"]), source
             if native_ok and self.trees_match(source, sha, native_input):

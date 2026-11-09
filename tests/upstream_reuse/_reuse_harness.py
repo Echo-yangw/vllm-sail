@@ -16,7 +16,7 @@ Design rules (shared with the pinned-source contract tests):
 * The upstream checkout is located from ``VLLM_SOURCE_ROOT`` (the same variable
   the rest of the suite uses). Without it, the whole directory is skipped.
 * An upstream test file is executed as an **isolated pytest subprocess** rooted
-  at the upstream checkout. This is deliberate: it lets upstream's own
+  at the checkout, or a tests-only view in strict CI. This lets upstream's own
   ``conftest.py`` fixtures and markers resolve, and it confines an upstream
   ``ImportError`` (missing optional dependency, drifted module) to that one
   parameterized case instead of corrupting our collection. The subprocess
@@ -35,13 +35,16 @@ Everything here is Python 3.9-compatible: annotations are strings (PEP 563 via
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any, NamedTuple
 from urllib.parse import urlparse
@@ -80,6 +83,7 @@ class ReuseEntry(NamedTuple):
     env: dict[str, str]
     xfail: tuple[str, ...]
     skip_reason: str
+    allowed_skips: tuple[dict[str, Any], ...] = ()
 
     @property
     def cpu_runnable(self) -> bool:
@@ -105,6 +109,7 @@ class RunResult(NamedTuple):
     tail: str
     skipped_by_manifest: bool = False
     environment_gap: str = ""
+    skipped_cases: tuple[tuple[str, str, str], ...] = ()
 
 
 #: Verbatim marker pytest prints when a ``conftest.py`` it needs raises on
@@ -199,6 +204,23 @@ def load_manifest(path: Path = MANIFEST_PATH) -> list[ReuseEntry]:
                 raise AssertionError(f"{entry_id}: invalid chip {chip!r}")
         if not chips:
             raise AssertionError(f"{entry_id}: declares no chips")
+        if re.fullmatch(r"[A-Za-z0-9_-]+", entry_id) is None:
+            raise AssertionError(f"invalid manifest id: {entry_id!r}")
+        path = Path(raw["path"])
+        if path.is_absolute() or ".." in path.parts or path.parts[0] != "tests":
+            raise AssertionError(f"{entry_id}: invalid upstream test path")
+        if int(raw.get("min_tests", 1)) < 1:
+            raise AssertionError(f"{entry_id}: min_tests must be positive")
+        allowed_skips = raw.get("allowed_skips", [])
+        for rule in allowed_skips:
+            if set(rule) != {"nodeid", "reason", "max_count"}:
+                raise AssertionError(f"{entry_id}: invalid skip rule")
+            if not rule["nodeid"] or not rule["reason"]:
+                raise AssertionError(
+                    f"{entry_id}: skip rule must identify node and reason"
+                )
+            if type(rule["max_count"]) is not int or rule["max_count"] < 1:
+                raise AssertionError(f"{entry_id}: skip count must be positive")
         env_raw = raw.get("env", {}) or {}
         entries.append(
             ReuseEntry(
@@ -215,6 +237,7 @@ def load_manifest(path: Path = MANIFEST_PATH) -> list[ReuseEntry]:
                 env={str(key): str(val) for key, val in env_raw.items()},
                 xfail=_as_str_tuple(raw.get("xfail")),
                 skip_reason=raw.get("skip_reason", ""),
+                allowed_skips=tuple(allowed_skips),
             )
         )
     return entries
@@ -489,12 +512,14 @@ def offline_hub_gap(entry: ReuseEntry, root: Path) -> str | None:
 # ---------------------------------------------------------------------------
 # JUnit XML parsing
 # ---------------------------------------------------------------------------
-def _parse_junit(path: Path) -> tuple[int, int, int, int, list[str]]:
-    """Return (collected, failures, errors, skipped, failed_names) from XML."""
+def _parse_junit(
+    path: Path,
+) -> tuple[int, int, int, int, list[str], list[tuple[str, str, str]]]:
     collected = failures = errors = skipped = 0
     failed_names: list[str] = []
+    skipped_cases: list[tuple[str, str, str]] = []
     if not path.is_file():
-        return collected, failures, errors, skipped, failed_names
+        return collected, failures, errors, skipped, failed_names, skipped_cases
     root = ET.parse(path).getroot()  # noqa: S314 - trusted local CI artifact
     suites = [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
     for suite in suites:
@@ -506,33 +531,146 @@ def _parse_junit(path: Path) -> tuple[int, int, int, int, list[str]]:
             node = f"{classname}::{name}" if classname else name
             has_failure = case.find("failure") is not None
             has_error = case.find("error") is not None
+            skipped_case = case.find("skipped")
             if has_failure:
                 failures += 1
                 failed_names.append(node)
             elif has_error:
                 errors += 1
                 failed_names.append(node)
-    return collected, failures, errors, skipped, failed_names
+            elif skipped_case is not None:
+                skipped_cases.append(
+                    (
+                        node,
+                        "\n".join(
+                            value.strip()
+                            for value in (
+                                skipped_case.get("message", ""),
+                                skipped_case.text,
+                            )
+                            if value
+                        ),
+                        skipped_case.get("type", ""),
+                    )
+                )
+    return collected, failures, errors, skipped, failed_names, skipped_cases
+
+
+def strict_result_error(entry: ReuseEntry, result: RunResult) -> str | None:
+    if result.skipped_by_manifest:
+        return None
+    if result.environment_gap:
+        return result.environment_gap
+    environment = conftest_import_error(result)
+    if environment is not None:
+        return environment
+    if result.returncode not in (0, 1):
+        return f"pytest exited with status {result.returncode}: {result.tail}"
+    if result.errors:
+        return f"upstream import/collection errors: {result.tail}"
+    if result.returncode == 1 and not result.failures:
+        return "pytest reported failure without matching test evidence"
+    if result.collected < entry.min_tests:
+        return f"collected {result.collected}, expected at least {entry.min_tests}"
+    if result.passed < 1:
+        return "no upstream test passed; structural checks do not establish coverage"
+    unexpected = [
+        name
+        for name in result.failed_names
+        if not any(pattern in name for pattern in entry.xfail)
+    ]
+    if unexpected or result.failures != len(result.failed_names):
+        return f"unexpected upstream failures: {unexpected or result.tail}"
+    if result.skipped != len(result.skipped_cases):
+        return "skip counts lack matching node/reason evidence"
+    counts = [0] * len(entry.allowed_skips)
+    for node, reason, kind in result.skipped_cases:
+        if kind == "pytest.xfail" and any(p in node for p in entry.xfail):
+            continue
+        matches = [
+            index
+            for index, rule in enumerate(entry.allowed_skips)
+            if fnmatchcase(node, rule["nodeid"]) and rule["reason"] in reason
+        ]
+        if len(matches) != 1:
+            return f"undeclared or ambiguous skip: {node}: {reason}"
+        index = matches[0]
+        counts[index] += 1
+        if counts[index] > entry.allowed_skips[index]["max_count"]:
+            return f"skip count exceeded for {node}: {reason}"
+    return None
 
 
 # ---------------------------------------------------------------------------
 # Upstream test runner
 # ---------------------------------------------------------------------------
-class UpstreamRunner:
-    """Executes whitelisted upstream test files inside the ambient runtime."""
+RUNTIME_BOOTSTRAP = """\
+import importlib
+import json
+import os
+import sys
+import sysconfig
+from pathlib import Path
 
-    def __init__(self, root: Path) -> None:
+runtime = {"vllm": str(Path(importlib.import_module("vllm").__file__).resolve())}
+if os.environ.get("VLLM_UPSTREAM_REUSE_TARGET") == "890p":
+    runtime["vllm_sail"] = str(Path(importlib.import_module("vllm_sail").__file__).resolve())
+    site = Path(sysconfig.get_paths()["purelib"]).resolve()
+    for name, path in runtime.items():
+        if site not in Path(path).parents:
+            raise RuntimeError(f"{name} is not imported from the installed wheel: {path}")
+    import torch
+    from vllm.platforms import current_platform
+    if not current_platform.is_ppu() or not torch.cuda.is_available():
+        raise RuntimeError("upstream reuse requires a real PPU runtime")
+    if torch.cuda.get_device_capability() != (8, 9):
+        raise RuntimeError("M890 qualification requires PPU 1.5; 810E is not enabled")
+print("upstream reuse runtime: " + json.dumps(runtime), flush=True)
+import pytest
+raise SystemExit(pytest.main(sys.argv[1:]))
+"""
+
+
+class UpstreamRunner:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        strict: bool = False,
+        execution_target: str = "cpu",
+        report_dir: Path | None = None,
+    ) -> None:
         self.root = root
+        self.strict = strict
+        self.execution_target = execution_target
+        self.report_dir = report_dir
+        self.records: dict[str, dict[str, Any]] = {}
+        self._view: tempfile.TemporaryDirectory | None = None
 
     def target(self, entry: ReuseEntry) -> Path:
         return self.root / entry.path
 
+    def runtime_root(self) -> Path:
+        if not self.strict:
+            return self.root
+        if self._view is None:
+            self._view = tempfile.TemporaryDirectory(prefix="vllm_reuse_tests_")
+            shutil.copytree(
+                self.root / "tests",
+                Path(self._view.name) / "tests",
+                ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"),
+            )
+        return Path(self._view.name)
+
+    def close(self) -> None:
+        if self._view is not None:
+            self._view.cleanup()
+            self._view = None
+
     def build_command(self, entry: ReuseEntry, junit_path: Path) -> list[str]:
-        """Assemble the pytest argv for one entry (no execution)."""
-        command = [
-            sys.executable,
-            "-m",
-            "pytest",
+        command = [sys.executable]
+        command += ["-c", RUNTIME_BOOTSTRAP] if self.strict else ["-m", "pytest"]
+        command += [
             entry.path,
             "-q",
             "-rN",
@@ -551,56 +689,113 @@ class UpstreamRunner:
         return command
 
     def build_env(self, entry: ReuseEntry) -> dict[str, str]:
-        """Ambient env + upstream root on PYTHONPATH + per-entry overrides."""
         env = dict(os.environ)
-        existing = env.get("PYTHONPATH", "")
-        parts = [str(self.root)]
-        if existing:
-            parts.append(existing)
-        env["PYTHONPATH"] = os.pathsep.join(parts)
-        env.update(entry.env)
+        if self.strict:
+            env.update(entry.env)
+            env["PYTHONPATH"] = str(self.runtime_root())
+            env["VLLM_UPSTREAM_REUSE_TARGET"] = self.execution_target
+        else:
+            existing = env.get("PYTHONPATH", "")
+            parts = [str(self.root)]
+            if existing:
+                parts.append(existing)
+            env["PYTHONPATH"] = os.pathsep.join(parts)
+            env.update(entry.env)
         return env
 
+    def complete(self, entry: ReuseEntry, result: RunResult) -> RunResult:
+        error = strict_result_error(entry, result)
+        self.records[entry.id] = {
+            "id": entry.id,
+            "path": entry.path,
+            "status": "parked"
+            if result.skipped_by_manifest
+            else "failed"
+            if error
+            else "passed",
+            "collected": result.collected,
+            "passed": result.passed,
+            "failed": result.failures,
+            "errors": result.errors,
+            "skipped": result.skipped,
+            "skipped_cases": [
+                {"nodeid": node, "reason": reason, "type": kind}
+                for node, reason, kind in result.skipped_cases
+            ],
+            "reason": result.tail if result.skipped_by_manifest else error,
+        }
+        if self.strict and error:
+            raise AssertionError(f"{entry.id}: {error}")
+        return result
+
+    def write_report(self, entries: list[ReuseEntry]) -> dict[str, Any]:
+        rows = []
+        for entry in entries:
+            if self.execution_target not in entry.chips:
+                row = {"id": entry.id, "path": entry.path, "status": "not_applicable"}
+            elif entry.skip_reason:
+                row = {
+                    "id": entry.id,
+                    "path": entry.path,
+                    "status": "parked",
+                    "reason": entry.skip_reason,
+                }
+            else:
+                row = self.records.get(
+                    entry.id,
+                    {"id": entry.id, "path": entry.path, "status": "not_run"},
+                )
+            rows.append(row)
+        active = [
+            entry
+            for entry in entries
+            if self.execution_target in entry.chips and not entry.skip_reason
+        ]
+        report = {
+            "schema": 1,
+            "target": self.execution_target,
+            "strict": self.strict,
+            "active_entries": len(active),
+            "passed_entries": sum(row["status"] == "passed" for row in rows),
+            "qualified": self.strict
+            and bool(active)
+            and all(
+                self.records.get(entry.id, {}).get("status") == "passed"
+                for entry in active
+            ),
+            "deferred_targets": {"810e": "skipped: no CI runner available"},
+            "entries": rows,
+        }
+        if self.report_dir is not None:
+            self.report_dir.mkdir(parents=True, exist_ok=True)
+            (self.report_dir / "report.json").write_text(
+                json.dumps(report, indent=2) + "\n", encoding="utf-8"
+            )
+        return report
+
     def run(self, entry: ReuseEntry) -> RunResult:
-        """Run one upstream test file and parse its JUnit report."""
         if entry.skip_reason:
-            return RunResult(
-                returncode=0,
-                collected=0,
-                passed=0,
-                failures=0,
-                errors=0,
-                skipped=0,
-                failed_names=(),
-                tail=entry.skip_reason,
-                skipped_by_manifest=True,
+            return self.complete(
+                entry, RunResult(0, 0, 0, 0, 0, 0, (), entry.skip_reason, True)
             )
         gap = offline_hub_gap(entry, self.root)
         if gap is not None:
-            # Decided before the subprocess starts: an entry that can only hang
-            # is not worth ``RUN_TIMEOUT_SECONDS`` of wall clock to prove it.
-            return RunResult(
-                returncode=0,
-                collected=0,
-                passed=0,
-                failures=0,
-                errors=0,
-                skipped=0,
-                failed_names=(),
-                tail=gap,
-                environment_gap=gap,
+            return self.complete(
+                entry, RunResult(0, 0, 0, 0, 0, 0, (), gap, environment_gap=gap)
             )
-        target = self.target(entry)
-        if not target.is_file():
-            return RunResult(
-                returncode=-1,
-                collected=0,
-                passed=0,
-                failures=0,
-                errors=1,
-                skipped=0,
-                failed_names=(f"MISSING::{entry.path}",),
-                tail=f"upstream test file not found at pinned commit: {entry.path}",
+        if not self.target(entry).is_file():
+            return self.complete(
+                entry,
+                RunResult(
+                    -1,
+                    0,
+                    0,
+                    0,
+                    1,
+                    0,
+                    (f"MISSING::{entry.path}",),
+                    f"upstream test file not found at pinned commit: {entry.path}",
+                ),
             )
         with tempfile.TemporaryDirectory(prefix="vllm_sail_reuse_") as workdir:
             junit_path = Path(workdir) / "report.xml"
@@ -608,7 +803,7 @@ class UpstreamRunner:
             try:
                 completed = subprocess.run(
                     command,
-                    cwd=str(self.root),
+                    cwd=str(self.runtime_root()),
                     env=self.build_env(entry),
                     capture_output=True,
                     text=True,
@@ -621,14 +816,16 @@ class UpstreamRunner:
                 returncode = -1
                 output = f"upstream reuse run timed out after {RUN_TIMEOUT_SECONDS}s\n"
                 output += (exc.stdout or "") if isinstance(exc.stdout, str) else ""
-            collected, failures, errors, skipped, failed_names = _parse_junit(
-                junit_path
+            collected, failures, errors, skipped, failed_names, skipped_cases = (
+                _parse_junit(junit_path)
             )
-        # Validate returncode beyond JUnit XML.  pytest exit codes:
-        #   0 = all passed, 1 = some failures, 5 = no tests collected,
-        #   2 = interrupted / collection error, 3 = internal error,
-        #   4 = usage error (handled by conftest_import_error).
-        # Codes 2/3 indicate a broken run even if the XML looks clean.
+            if self.report_dir is not None:
+                self.report_dir.mkdir(parents=True, exist_ok=True)
+                (self.report_dir / f"{entry.id}.log").write_text(
+                    output, encoding="utf-8"
+                )
+                if junit_path.is_file():
+                    shutil.copyfile(junit_path, self.report_dir / f"{entry.id}.xml")
         if returncode in (2, 3) and errors == 0:
             errors = 1
             if not failed_names:
@@ -637,16 +834,19 @@ class UpstreamRunner:
         # so the min_tests guard in consumers catches it reliably.
         if returncode == 5:
             collected = 0
-
         passed = max(collected - failures - errors - skipped, 0)
         tail = "\n".join(line for line in output.splitlines() if line.strip())[-2000:]
-        return RunResult(
-            returncode=returncode,
-            collected=collected,
-            passed=passed,
-            failures=failures,
-            errors=errors,
-            skipped=skipped,
-            failed_names=tuple(failed_names),
-            tail=tail,
+        return self.complete(
+            entry,
+            RunResult(
+                returncode=returncode,
+                collected=collected,
+                passed=passed,
+                failures=failures,
+                errors=errors,
+                skipped=skipped,
+                failed_names=tuple(failed_names),
+                tail=tail,
+                skipped_cases=tuple(skipped_cases),
+            ),
         )

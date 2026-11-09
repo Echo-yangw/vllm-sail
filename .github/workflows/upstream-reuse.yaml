@@ -1,50 +1,16 @@
 name: Upstream test reuse gate
 
-# CI plan category 5 (Week 5-8): reuse whitelisted upstream vLLM tests inside
-# the vllm-sail runtime. vllm-sail disguises its PPU platform as CUDA
-# (PPUPlatform._enum = PlatformEnum.CUDA), so upstream tests written against the
-# CUDA platform -- that assert logic, not kernel numerics -- run unchanged.
-#
-# Two lanes:
-#
-# 1. cpu-reuse (PR / push / manual): runs the CPU subset
-#    (-m "upstream_source and not ppu") against the PINNED upstream checkout
-#    (.github/vllm-main-verified.commit) with a device-less torch + vLLM
-#    runtime installed from that same pinned source (VLLM_TARGET_DEVICE=empty,
-#    no kernel compilation). Fast, hardware-free regression net for the
-#    params / config / v1-core / sampling / tokenization whitelist.
-#
-# 2. nightly-ppu-reuse (schedule / manual): runs the FULL reuse set
-#    (-m upstream_source, which also includes the `ppu`-marked device-only
-#    entries) on real ZW-810E and ZW-M890P lanes via ppu-scheduler-action.
-#
-# Runner labels (confirmed with infra), shared with the PR49 PPU workflows:
-#   810E: board-type=OAM-810E
-#   M890P: board-type=ZW-M890P
+# Hardware-free PR/push/manual subset. M890 acceptance consumes validated CI
+# wheels through _ppu-upstream-reuse.yaml in the authorized PPU build pipeline.
 
 on:
   pull_request:
   push:
     branches: [main, master]
   workflow_dispatch:
-    inputs:
-      build_run_id:
-        description: "PPU CI build run supplying wheels for the nightly lane (blank = resolve latest)"
-        required: false
-        default: ""
-        type: string
-      image:
-        description: Runtime container image the PPU pod runs
-        required: false
-        default: download.t-head.cn/docker_release/pytorch@sha256:a33a67832f7ec442c481421e94255518dd67e464406f8e610c15d2b594b21f80
-        type: string
-  schedule:
-    # 18:30 UTC = 02:30 CST, after the E2E nightly (18:00 UTC).
-    - cron: "30 18 * * *"
 
 permissions:
   contents: read
-  actions: read
 
 concurrency:
   group: upstream-reuse-${{ github.event.pull_request.number || github.ref }}-${{ github.run_id }}
@@ -60,6 +26,8 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -80,161 +48,51 @@ jobs:
           path: .upstream/vllm
           persist-credentials: false
 
-      - name: Record the tested upstream revision
-        run: git -C .upstream/vllm rev-parse HEAD
+      - name: Verify the tested upstream revision
+        env:
+          EXPECTED_SHA: ${{ steps.upstream.outputs.ref }}
+        run: test "$(git -C .upstream/vllm rev-parse HEAD)" = "$EXPECTED_SHA"
 
       - name: Purge pip cache (prevent cache-poisoning vector)
         run: rm -rf ~/.cache/pip
 
-      - name: Install build dependencies and CPU-only test tooling
-        run: python -m pip install --no-cache-dir -r requirements/build.txt -r requirements/dev.txt
+      - name: Install build dependencies and dedicated reuse tooling
+        run: python -m pip install --no-cache-dir -r requirements/build.txt -r requirements/upstream-reuse.txt
 
-      - name: Install a device-less torch + vLLM runtime from the pinned source
+      - name: Install a device-less torch and pinned vLLM wheel
         run: |
           set -Eeuo pipefail
-          python -m pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu torch
-          # VLLM_TARGET_DEVICE=empty builds the pure-Python package with no
-          # kernel compilation -- enough for the CPU-runnable whitelist, whose
-          # tests exercise Python-level logic (params/config/scheduling), not
-          # compiled ops.
-          VLLM_TARGET_DEVICE=empty python -m pip install --no-cache-dir --no-build-isolation -e .upstream/vllm
-          python -c "import vllm, torch; print('vllm', vllm.__version__, 'torch', torch.__version__)"
+          python -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch
+          VLLM_TARGET_DEVICE=empty python -m pip install --no-cache-dir --no-build-isolation .upstream/vllm
+          cd "$RUNNER_TEMP"
+          python -c "import vllm, torch, tblib, numba; print('vllm', vllm.__version__, vllm.__file__, 'torch', torch.__version__, 'numba', numba.__version__, 'tblib', tblib.__version__)"
+
+      - name: Prepare a tests-only runtime view
+        id: view
+        run: |
+          view="$(mktemp -d "${RUNNER_TEMP}/cpu-reuse.XXXXXX")"
+          cp -a tests "$view/tests"
+          cp pyproject.toml "$view/pyproject.toml"
+          echo "path=$view" >> "$GITHUB_OUTPUT"
 
       - name: Run the CPU reuse subset (fail-closed)
+        working-directory: ${{ steps.view.outputs.path }}
         env:
           VLLM_SOURCE_ROOT: ${{ github.workspace }}/.upstream/vllm
-        run: >-
-          python -m pytest
-          tests/upstream_reuse
-          -q -rs
-          -m "upstream_source and not ppu"
-          --require-upstream-source
-
-  # ==============================================================
-  # nightly-ppu-reuse: full reuse set on real PPU (dual chip)
-  # ==============================================================
-  resolve-build:
-    name: Resolve nightly wheel build
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: 8-ppu-m890p
-    timeout-minutes: 10
-    container:
-      image: ${{ inputs.image || 'download.t-head.cn/docker_release/pytorch@sha256:a33a67832f7ec442c481421e94255518dd67e464406f8e610c15d2b594b21f80' }}
-    outputs:
-      build_run_id: ${{ steps.resolve.outputs.build_run_id }}
-    steps:
-      - name: Resolve build run id
-        id: resolve
-        shell: bash
-        env:
-          INPUT_BUILD_RUN_ID: ${{ inputs.build_run_id }}
-          GH_TOKEN: ${{ github.token }}
+          VLLM_TARGET_DEVICE: cpu
+          REUSE_REPORT_DIR: ${{ runner.temp }}/cpu-reuse-report
         run: |
-          set -Eeuo pipefail
-          if [[ -n "${INPUT_BUILD_RUN_ID}" ]]; then
-            echo "build_run_id=${INPUT_BUILD_RUN_ID}" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          base="https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/build-ppu-wheels.yaml/runs"
-          hdr_auth="Authorization: Bearer ${GH_TOKEN}"
-          hdr_accept="Accept: application/vnd.github+json"
-          parse_id() {
-            python3 -c 'import sys,json;r=json.load(sys.stdin).get("workflow_runs",[]);print(r[0]["id"] if r else "")'
-          }
-          run_id="$(curl -fsSL -H "${hdr_auth}" -H "${hdr_accept}" \
-            "${base}?status=success&per_page=1&branch=${GITHUB_REF_NAME}" | parse_id || true)"
-          if [[ -z "${run_id}" ]]; then
-            run_id="$(curl -fsSL -H "${hdr_auth}" -H "${hdr_accept}" \
-              "${base}?status=success&per_page=1" | parse_id || true)"
-          fi
-          if [[ -z "${run_id}" ]]; then
-            echo "::error::nightly upstream-reuse could not resolve a successful PPU CI build"
-            exit 1
-          fi
-          echo "build_run_id=${run_id}" >> "$GITHUB_OUTPUT"
+          unset PYTHONPATH
+          python -m pytest tests/upstream_reuse -q -rs \
+            -m "upstream_source and not ppu" --require-upstream-source \
+            --strict-upstream-reuse --upstream-reuse-target=cpu \
+            --upstream-reuse-report-dir="$REUSE_REPORT_DIR"
 
-  nightly-ppu-reuse:
-    name: Category-5 upstream reuse (${{ matrix.chip }})
-    needs: resolve-build
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: 8-ppu-m890p
-    timeout-minutes: 90
-    container:
-      image: ${{ inputs.image || 'download.t-head.cn/docker_release/pytorch@sha256:a33a67832f7ec442c481421e94255518dd67e464406f8e610c15d2b594b21f80' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - chip: 810e
-            board: OAM-810E
-            nproc: 1
-          - chip: 890p
-            board: ZW-M890P
-            nproc: 1
-    steps:
-      - name: Disable internal GitHub mirror rewrite
-        shell: bash
-        run: |
-          for scope in system global; do
-            git config --${scope} --get-regexp '^url\..*\.insteadof$' 2>/dev/null || true
-            while IFS= read -r section; do
-              [ -n "${section}" ] || continue
-              git config --${scope} --unset-all "${section}.insteadOf" 2>/dev/null || true
-            done < <(git config --${scope} --get-regexp '^url\..*\.insteadof$' 2>/dev/null | awk '$2 ~ /github\.com/ {sub(/\.insteadof$/, "", $1); print $1}')
-          done
-
-      - name: Check out vLLM SAIL
-        uses: actions/checkout@v4
+      - name: Upload CPU reuse diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          github-server-url: https://github.com
-
-      - name: Resolve the pinned upstream ref
-        id: upstream
-        run: |
-          pin="$(tr -d '[:space:]' < .github/vllm-main-verified.commit)"
-          [[ "${pin}" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Invalid upstream ref: ${pin}"; exit 1; }
-          echo "ref=${pin}" >> "$GITHUB_OUTPUT"
-
-      - name: Check out upstream source at the pinned commit
-        uses: actions/checkout@v4
-        with:
-          repository: vllm-project/vllm
-          ref: ${{ steps.upstream.outputs.ref }}
-          path: .upstream/vllm
-          persist-credentials: false
-
-      - name: Download CI-built wheels
-        uses: actions/download-artifact@v4
-        with:
-          name: ppu-wheels-${{ needs.resolve-build.outputs.build_run_id }}
-          path: wheels
-          run-id: ${{ needs.resolve-build.outputs.build_run_id }}
-          repository: ${{ github.repository }}
-          github-token: ${{ github.token }}
-
-      - name: Run full upstream reuse set on PPU (${{ matrix.chip }})
-        uses: t-head/ppu-scheduler-action@main
-        with:
-          image: ${{ inputs.image || 'download.t-head.cn/docker_release/pytorch@sha256:a33a67832f7ec442c481421e94255518dd67e464406f8e610c15d2b594b21f80' }}
-          nnodes: 0
-          nproc_per_node: ${{ matrix.nproc }}
-          namespace: ppu-sched
-          node_selector: board-type=${{ matrix.board }}
-          timeout_minutes: 60
-          cleanup_policy: always
-          job_suffix: upstream-reuse-${{ matrix.chip }}
-          source_dir: /workspace/source
-          artifact_paths: wheels/**
-          extra_env: VLLM_SOURCE_ROOT=/workspace/source/.upstream/vllm,WHEELS_DIR=/workspace/source/wheels
-          container_options: |
-            privileged: true
-            host_ipc: true
-            host_network: true
-            shm_size: 32Gi
-          command: >-
-            cd /workspace/source &&
-            python -m pip install --no-deps wheels/*.whl &&
-            python -c "import vllm, vllm_sail; from vllm.platforms import current_platform;
-            print('is_ppu', current_platform.is_ppu(), 'is_cuda', current_platform.is_cuda())" &&
-            python -m pytest tests/upstream_reuse -q -rs
-            -m upstream_source --require-upstream-source
+          name: cpu-upstream-reuse-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/cpu-reuse-report/**
+          if-no-files-found: warn
+          retention-days: 14

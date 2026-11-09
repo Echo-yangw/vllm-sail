@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -70,7 +71,7 @@ def test_ppu_jobs_use_hosted_build_and_self_hosted_runtime_runners():
         ("_ppu-pin-ut.yaml", "pin-unit-tests"),
         ("_ppu-model-tests.yaml", "e2e"),
         ("_ppu-ops-tests.yaml", "ops-tests"),
-        ("upstream-reuse.yaml", "nightly-ppu-reuse"),
+        ("_ppu-upstream-reuse.yaml", "upstream-reuse"),
     ):
         assert workflow(filename)["jobs"][job_id]["runs-on"] == "8-ppu-m890p"
 
@@ -211,6 +212,7 @@ def test_executor_separates_read_only_pr_execution_and_always_reporting():
         "_ppu-pin-ut.yaml",
         "_ppu-model-tests.yaml",
         "_ppu-kernel-perf.yaml",
+        "_ppu-upstream-reuse.yaml",
         "ppu-ops-tests.yaml",
         "ppu-debug.yaml",
         "kernel-perf-label.yaml",
@@ -235,6 +237,7 @@ def test_untrusted_workflows_have_no_write_permissions_or_inherited_secrets(name
         ("_ppu-pin-ut.yaml", ["pin-unit-tests"]),
         ("_ppu-model-tests.yaml", ["prepare", "e2e"]),
         ("_ppu-kernel-perf.yaml", ["kernel-perf"]),
+        ("_ppu-upstream-reuse.yaml", ["upstream-reuse"]),
     ],
 )
 def test_every_pr_checkout_verifies_the_requested_sha_before_execution(name, job_ids):
@@ -283,6 +286,7 @@ def test_every_pr_checkout_verifies_the_requested_sha_before_execution(name, job
         ("_ppu-model-tests.yaml", "prepare"),
         ("_ppu-model-tests.yaml", "e2e"),
         ("_ppu-kernel-perf.yaml", "kernel-perf"),
+        ("_ppu-upstream-reuse.yaml", "upstream-reuse"),
     ],
 )
 def test_sha_verification_allows_different_owner_but_rejects_wrong_sha(
@@ -347,7 +351,7 @@ def test_pr_pipeline_structure():
         "default": False,
     }
     assert inputs["skip_device_tests"] == {
-        "description": "Build wheels only, without the pin-UT and model-smoke lanes",
+        "description": "Build wheels only, without pin-UT, model-smoke or upstream-reuse lanes",
         "type": "boolean",
         "default": False,
     }
@@ -365,6 +369,7 @@ def test_pr_pipeline_structure():
         "build",
         "pin-unit-tests",
         "model-tests",
+        "upstream-reuse",
         "gate",
     }
     runtime = jobs["runtime-image"]
@@ -392,6 +397,7 @@ def test_pr_pipeline_structure():
         "build",
         "pin-unit-tests",
         "model-tests",
+        "upstream-reuse",
     ]
     assert "always()" in jobs["gate"]["if"]
     assert "ci-preview" in jobs["gate"]["if"]
@@ -408,6 +414,7 @@ def test_pr_pipeline_structure():
     for job_id, name, target in (
         ("pin-unit-tests", "PPU pin UT", "_ppu-pin-ut.yaml"),
         ("model-tests", "PPU model tests", "_ppu-model-tests.yaml"),
+        ("upstream-reuse", "PPU upstream reuse", "_ppu-upstream-reuse.yaml"),
     ):
         job = jobs[job_id]
         assert job["name"] == name
@@ -436,7 +443,13 @@ def test_docs_only_call_uses_hosted_gate_without_ppu_jobs():
         "needs.runtime-image.result": "skipped",
         "needs.build.result": "skipped",
     }
-    for job_id in ("runtime-image", "build", "pin-unit-tests", "model-tests"):
+    for job_id in (
+        "runtime-image",
+        "build",
+        "pin-unit-tests",
+        "model-tests",
+        "upstream-reuse",
+    ):
         assert not expression(jobs[job_id]["if"], context)
     assert expression(jobs["gate"]["if"], context)
     gate = jobs["gate"]["steps"][0]["run"].replace(
@@ -454,6 +467,7 @@ def test_docs_only_call_uses_hosted_gate_without_ppu_jobs():
                         "build",
                         "pin-unit-tests",
                         "model-tests",
+                        "upstream-reuse",
                     )
                 }
             ),
@@ -482,7 +496,7 @@ def test_skip_device_tests_guards_the_device_lanes():
     }
     # Building wheels for a lane that tests elsewhere must not also allocate
     # the pin-UT and model-smoke hosts.
-    for job_id in ("pin-unit-tests", "model-tests"):
+    for job_id in ("pin-unit-tests", "model-tests", "upstream-reuse"):
         assert not expression(jobs[job_id]["if"], context)
     assert expression(jobs["build"]["if"], context)
     assert expression(jobs["gate"]["if"], context)
@@ -502,6 +516,7 @@ def test_gate_honours_skip_device_tests(skip_device_tests, returncode):
                 "build": {"result": "success"},
                 "pin-unit-tests": {"result": "skipped"},
                 "model-tests": {"result": "skipped"},
+                "upstream-reuse": {"result": "skipped"},
             }
         ),
         "SKIP_PPU": "false",
@@ -861,6 +876,7 @@ def test_removing_ci_preview_cancels_active_preview_without_starting_jobs():
         ("build", "_ppu-build.yaml", ["build"]),
         ("pin-unit-tests", "_ppu-pin-ut.yaml", ["pin-unit-tests"]),
         ("model-tests", "_ppu-model-tests.yaml", ["prepare", "e2e"]),
+        ("upstream-reuse", "_ppu-upstream-reuse.yaml", ["upstream-reuse"]),
     ],
 )
 def test_labeled_preview_propagates_merge_sha_to_build_and_test_checkouts(
@@ -1159,7 +1175,7 @@ def test_consumers_require_build_or_valid_reuse(build_jobs, build, run_id, sourc
     }
     reuse = bool(run_id) and bool(source)
     eligible = build == "success" or (build == "skipped" and reuse)
-    for job_id in ("pin-unit-tests", "model-tests"):
+    for job_id in ("pin-unit-tests", "model-tests", "upstream-reuse"):
         assert bool(expression(build_jobs[job_id]["if"], context)) == eligible
     assert bool(expression(build_jobs["build"]["if"], context)) == (not run_id)
     # Gate must execute even after failed/cancelled/skipped dependencies.
@@ -1168,7 +1184,7 @@ def test_consumers_require_build_or_valid_reuse(build_jobs, build, run_id, sourc
 
 @pytest.mark.parametrize(
     "states",
-    itertools.product(["success", "failure", "cancelled", "skipped"], repeat=3),
+    itertools.product(["success", "failure", "cancelled", "skipped"], repeat=4),
 )
 @pytest.mark.parametrize(
     "run_id,source", [("", ""), ("123", "a" * 40), ("999", ""), ("", "a" * 40)]
@@ -1192,7 +1208,7 @@ def test_gate_executes_fail_closed_truth_table(
     results = {"runtime-image": {"result": "success"}}
     results.update(
         zip(
-            ("build", "pin-unit-tests", "model-tests"),
+            ("build", "pin-unit-tests", "model-tests", "upstream-reuse"),
             ({"result": state} for state in states),
             strict=False,
         )
@@ -1208,7 +1224,7 @@ def test_gate_executes_fail_closed_truth_table(
     expected = (
         states[0] == "success"
         or (states[0] == "skipped" and bool(run_id) and bool(source))
-    ) and states[1:] == ("success", "success")
+    ) and states[1:] == ("success", "success", "success")
     assert passed is expected
 
 
@@ -1273,6 +1289,285 @@ def test_runtime_workflows_use_the_checked_in_docker_wrapper():
     assert (
         "ppu-scheduler-action" not in (WORKFLOWS / "_ppu-kernel-perf.yaml").read_text()
     )
+
+
+def test_upstream_reuse_cpu_entry_is_strict_and_has_no_device_or_nightly_jobs():
+    config = workflow("upstream-reuse.yaml")
+    assert set(config[True]) == {"pull_request", "push", "workflow_dispatch"}
+    assert config[True]["workflow_dispatch"] is None
+    assert set(config["jobs"]) == {"cpu-reuse"}
+    assert config["permissions"] == {"contents": "read"}
+    job = config["jobs"]["cpu-reuse"]
+    assert job["runs-on"] == "ubuntu-latest"
+    assert all(c["with"]["persist-credentials"] is False for c in checkouts(job))
+    upstream = checkouts(job)[1]
+    assert upstream["with"]["ref"] == "${{ steps.upstream.outputs.ref }}"
+    text = (WORKFLOWS / "upstream-reuse.yaml").read_text()
+    assert "requirements/upstream-reuse.txt" in text
+    assert "requirements/dev.txt" not in text
+    assert "--no-build-isolation .upstream/vllm" in text
+    assert "-e .upstream/vllm" not in text
+    step = next(s for s in job["steps"] if s.get("name", "").startswith("Run the CPU"))
+    assert step["working-directory"] == "${{ steps.view.outputs.path }}"
+    assert step["env"]["VLLM_TARGET_DEVICE"] == "cpu"
+    assert "unset PYTHONPATH" in step["run"]
+    for arg in (
+        '"upstream_source and not ppu"',
+        "--require-upstream-source",
+        "--strict-upstream-reuse",
+        "--upstream-reuse-target=cpu",
+        "--upstream-reuse-report-dir=",
+    ):
+        assert arg in step["run"]
+    assert "ppu-scheduler-action" not in text
+    assert "nightly" not in text
+    assert "resolve-build" not in text
+
+
+def test_upstream_reuse_leaf_uses_exact_pin_and_dual_source_identity():
+    config = workflow("_ppu-upstream-reuse.yaml")
+    assert set(config[True]) == {"workflow_call"}
+    assert set(config[True]["workflow_call"]["inputs"]) == {
+        "pr_mode",
+        "pr_head_sha",
+        "build_run_id",
+        "wheel_source_sha",
+    }
+    assert set(config["jobs"]) == {"upstream-reuse"}
+    job = config["jobs"]["upstream-reuse"]
+    assert "container" not in job and "strategy" not in job
+    assert job["env"]["GIT_CONFIG_NOSYSTEM"] == "1"
+    assert "mktemp" in job["steps"][0]["run"]
+    upstream = checkouts(job)[1]
+    assert upstream["with"] == {
+        "repository": "vllm-project/vllm",
+        "ref": "${{ steps.upstream.outputs.ref }}",
+        "path": "${{ steps.runtime.outputs.upstream_rel }}",
+        "persist-credentials": False,
+    }
+    verify = job["steps"][job["steps"].index(upstream) + 1]
+    assert verify["env"]["EXPECTED_SHA"] == upstream["with"]["ref"]
+    assert "rev-parse HEAD" in verify["run"]
+    runtime = next(
+        s for s in job["steps"] if "ppu_runtime_container.sh" in s.get("run", "")
+    )
+    assert runtime["run"].endswith('" upstream-reuse')
+    assert runtime["env"]["PPU_CI_DEVICE_COUNT"] == "1"
+    assert (
+        runtime["env"]["PPU_CI_UPSTREAM_DIR"] == "${{ steps.runtime.outputs.upstream }}"
+    )
+    assert runtime["env"]["PPU_CI_SOURCE_SHA"] == EXPECTED_SHA
+    assert runtime["env"]["PPU_CI_WHEEL_SOURCE_SHA"] == (
+        "${{ inputs.wheel_source_sha || inputs.pr_head_sha || github.sha }}"
+    )
+    assert runtime["env"]["PPU_CI_REQUIRE_PR_ARTIFACT"] == "${{ inputs.pr_mode }}"
+    assert not any("TOKEN" in key or "IMAGE" in key for key in runtime["env"])
+    download = next(
+        s for s in job["steps"] if s.get("uses") == "actions/download-artifact@v4"
+    )
+    assert download["with"]["run-id"] == "${{ inputs.build_run_id }}"
+    assert download["with"]["name"] == "ppu-wheels-${{ inputs.build_run_id }}"
+    upload = job["steps"][-1]
+    assert upload["if"] == "always()"
+    assert upload["uses"] == "actions/upload-artifact@v4"
+    assert "github.run_attempt" in upload["with"]["name"]
+    jobs = workflow("ppu-build-and-test.yaml")["jobs"]
+    assert (
+        jobs["upstream-reuse"]["if"]
+        == jobs["pin-unit-tests"]["if"]
+        == jobs["model-tests"]["if"]
+    )
+
+
+@pytest.mark.parametrize(
+    "upstream_sha,count,accepted",
+    [("b" * 40, "1", True), ("c" * 40, "1", False), ("b" * 40, "2", False)],
+)
+def test_upstream_reuse_container_mounts_pin_readonly_without_host_sdk_or_token(
+    tmp_path, upstream_sha, count, accepted
+):
+    source, upstream, wheels, artifacts, binaries = [
+        tmp_path / name for name in ("source", "upstream", "wheels", "artifacts", "bin")
+    ]
+    for directory in (source, upstream, wheels, artifacts, binaries):
+        directory.mkdir()
+    (source / ".github").mkdir()
+    (source / ".github/vllm-main-verified.commit").write_text("b" * 40 + "\n")
+    (source / "scripts/ci").mkdir(parents=True)
+    (source / "scripts/ci/ppu_runtime_image.sh").write_text(
+        (ROOT / "scripts/ci/ppu_runtime_image.sh").read_text()
+    )
+    (upstream / "vllm").mkdir()
+    (upstream / "vllm/__init__.py").write_text("")
+    commands = {
+        "git": (
+            "import os,sys\n"
+            "print(os.environ['UPSTREAM_SHA'] if sys.argv[sys.argv.index('-C')+1].endswith('/upstream') "
+            "else 'a'*40)\n"
+        ),
+        "flock": "pass\n",
+        "docker": (
+            "import json,os,sys\n"
+            "with open(os.environ['DOCKER_LOG'], 'a') as f: f.write(json.dumps(sys.argv[1:])+'\\n')\n"
+            "if sys.argv[1:3] == ['image','inspect']: print('sha256:'+'d'*64)\n"
+        ),
+    }
+    for name, body in commands.items():
+        path = binaries / name
+        path.write_text(f"#!{sys.executable}\n" + body)
+        path.chmod(0o755)
+    log = tmp_path / "docker.jsonl"
+    env = {
+        **os.environ,
+        "PATH": str(binaries) + os.pathsep + os.environ["PATH"],
+        "PPU_CI_SOURCE_DIR": str(source),
+        "PPU_CI_SOURCE_SHA": "a" * 40,
+        "PPU_CI_UPSTREAM_DIR": str(upstream),
+        "PPU_CI_WHEELS_DIR": str(wheels),
+        "PPU_CI_ARTIFACT_DIR": str(artifacts),
+        "PPU_CI_DEVICE_COUNT": count,
+        "PPU_CI_REQUIRE_PR_ARTIFACT": "true",
+        "PPU_CI_WHEEL_SOURCE_SHA": "e" * 40,
+        "PPU_CI_RUNTIME_IMAGE": "runner-configured",
+        "GITHUB_TOKEN": "never-pass-this-token",
+        "UPSTREAM_SHA": upstream_sha,
+        "DOCKER_LOG": str(log),
+    }
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts/ci/ppu_runtime_container.sh"), "upstream-reuse"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert (result.returncode == 0) is accepted, result.stderr
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    creates = [call for call in calls if call[0] == "create"]
+    if not accepted:
+        assert not creates
+        return
+    args = creates[0]
+    assert f"type=bind,source={upstream},target=/upstream,readonly" in args
+    assert f"type=bind,source={source},target=/source,readonly" in args
+    assert f"type=bind,source={wheels},target=/wheels,readonly" in args
+    assert f"type=bind,source={artifacts},target=/artifacts" in args
+    assert "TESTED_SAIL_COMMIT=" + "a" * 40 in args
+    assert "EXPECTED_SAIL_COMMIT=" + "e" * 40 in args
+    assert "EXPECTED_VLLM_COMMIT=" + "b" * 40 in args
+    assert "VLLM_SOURCE_ROOT=/upstream" in args
+    assert args[-1] == "/source/scripts/ci/ppu_upstream_reuse.sh"
+    assert sum(arg.startswith("--device=/dev/alixpu_ppu") for arg in args) == 1
+    assert not any(
+        "TOKEN" in arg or "never-pass" in arg or "PPU_SDK" in arg for arg in args
+    )
+
+
+def test_upstream_reuse_script_protects_image_and_wheel_imports_and_is_fail_closed():
+    text = (ROOT / "scripts/ci/ppu_upstream_reuse.sh").read_text()
+    assert '--sail-commit "${EXPECTED_SAIL_COMMIT}"' in text
+    assert '--vllm-commit "${EXPECTED_VLLM_COMMIT}"' in text
+    assert "PPU PIN UT SKIP" not in text
+    assert "810E skipped: runner unavailable" in text
+    assert "unset VLLM_VERSION PYTHONPATH GH_TOKEN GITHUB_TOKEN" in text
+    assert "--no-index --no-deps --force-reinstall" in text
+    assert 'PIP_CONSTRAINT="${REUSE_RESULTS_DIR}/image-constraints.txt"' in text
+    assert 'ppu_image_stack.py" capture' in text
+    assert 'ppu_image_stack.py" verify' in text
+    assert "trap cleanup EXIT" in text
+    assert "requirements/upstream-reuse.txt" in text
+    assert "requirements/dev.txt" not in text
+    assert "current_platform.is_ppu()" in text
+    assert "torch.cuda.is_available()" in text
+    assert "assert count == 1" in text
+    assert "capability == (8, 9)" in text
+    assert 'assert "890" in name.upper()' in text
+    assert 'cp -a "${ROOT_DIR}/tests" "${WORK_DIR}/tests"' in text
+    assert 'cp "${ROOT_DIR}/pyproject.toml" "${WORK_DIR}/pyproject.toml"' in text
+    assert 'cd "${WORK_DIR}"' in text
+    assert "cp -a /upstream" not in text and "PYTHONPATH=" not in text
+    for arg in (
+        "tests/upstream_reuse -q -rs -m upstream_source",
+        "--require-upstream-source --strict-upstream-reuse",
+        "--upstream-reuse-target=890p",
+        "--upstream-reuse-report-dir=/artifacts/reuse",
+    ):
+        assert arg in text
+
+
+@pytest.mark.parametrize(
+    "change,reason",
+    [
+        ({}, None),
+        ({"is_ppu": False}, "namespace"),
+        ({"available": False}, "real PPU"),
+        ({"count": 0}, "visible card"),
+        ({"count": 2}, "visible card"),
+        ({"capability": (8, 0)}, "non-M890"),
+        ({"platform_capability": (8, 0)}, "8, 0"),
+        ({"name": "NVIDIA RTX 4090"}, "non-M890"),
+        ({"vllm_path": "/upstream/vllm/__init__.py"}, "vllm"),
+        ({"sail_path": "/source/vllm_sail/__init__.py"}, "vllm_sail"),
+    ],
+)
+def test_reuse_preflight_rejects_wrong_device_and_checkout_imports(
+    tmp_path, monkeypatch, change, reason
+):
+    values = {
+        "is_ppu": True,
+        "available": True,
+        "count": 1,
+        "capability": (8, 9),
+        "platform_capability": (8, 9),
+        "name": "ZW-M890P",
+        "vllm_path": "/site-packages/vllm/__init__.py",
+        "sail_path": "/site-packages/vllm_sail/__init__.py",
+        **change,
+    }
+    platform = types.SimpleNamespace(
+        is_ppu=lambda: values["is_ppu"],
+        get_device_capability=lambda _: values["platform_capability"],
+    )
+    torch = types.SimpleNamespace(
+        __file__="/site-packages/torch/__init__.py",
+        __version__="2.13+sail",
+        cuda=types.SimpleNamespace(
+            is_available=lambda: values["available"],
+            device_count=lambda: values["count"],
+            get_device_name=lambda _: values["name"],
+            get_device_capability=lambda _: values["capability"],
+        ),
+    )
+    modules = {
+        "torch": torch,
+        "vllm": types.SimpleNamespace(__file__=values["vllm_path"]),
+        "vllm_sail": types.SimpleNamespace(__file__=values["sail_path"]),
+        "vllm.platforms": types.SimpleNamespace(current_platform=platform),
+        "vllm_sail.compat": types.SimpleNamespace(
+            check_vllm_compatibility=lambda **_: None
+        ),
+    }
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    for key, value in {
+        "TESTED_SAIL_COMMIT": "a" * 40,
+        "EXPECTED_SAIL_COMMIT": "b" * 40,
+        "EXPECTED_VLLM_COMMIT": "c" * 40,
+        "REUSE_RESULTS_DIR": str(tmp_path),
+    }.items():
+        monkeypatch.setenv(key, value)
+    text = (ROOT / "scripts/ci/ppu_upstream_reuse.sh").read_text()
+    code = text.split("python - <<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+    if reason is not None:
+        with pytest.raises(AssertionError, match=reason):
+            exec(compile(code, "reuse-preflight", "exec"), {})
+        assert not (tmp_path / "runtime-identity.json").exists()
+    else:
+        exec(compile(code, "reuse-preflight", "exec"), {})
+        identity = json.loads((tmp_path / "runtime-identity.json").read_text())
+        assert identity["tested_sha"] == "a" * 40
+        assert identity["wheel_source_sha"] == "b" * 40
+        assert identity["device_count"] == 1
+        assert identity["capability"] == [8, 9]
+        assert identity["810e"] == "skipped: runner unavailable"
 
 
 # --- kernel-perf label workflow ------------------------------------------------
@@ -1412,8 +1707,11 @@ def test_perf_regression_avoids_source_shadowing():
     assert 'cp "${ROOT_DIR}/pyproject.toml" "${PERF_RUN_DIR}/pyproject.toml"' in text
     assert 'cd "${PERF_RUN_DIR}"' in text
     # vllm_sail must NOT be copied into the run directory.
-    assert 'cp' not in text.split('cd "${PERF_RUN_DIR}"')[1].split('pytest_args')[0] or \
-        'vllm_sail' not in text.split('cd "${PERF_RUN_DIR}"')[1].split('pytest_args')[0]
+    assert (
+        "cp" not in text.split('cd "${PERF_RUN_DIR}"')[1].split("pytest_args")[0]
+        or "vllm_sail"
+        not in text.split('cd "${PERF_RUN_DIR}"')[1].split("pytest_args")[0]
+    )
     # unset PYTHONPATH still guards against external environment leaks.
     assert "unset PYTHONPATH" in text
     # No legacy three-layer workarounds remain.
