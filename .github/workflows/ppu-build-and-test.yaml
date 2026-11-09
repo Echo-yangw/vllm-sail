@@ -176,7 +176,7 @@ jobs:
       wheel_source_sha: ${{ inputs.wheel_source_sha || '' }}
 
   upstream-reuse:
-    name: PPU upstream reuse
+    name: CPU and M890 upstream reuse
     needs: [runtime-image, build]
     if: >-
       ${{ !cancelled() &&
@@ -194,7 +194,7 @@ jobs:
     permissions:
       contents: read
       actions: read
-    uses: ./.github/workflows/_ppu-upstream-reuse.yaml
+    uses: ./.github/workflows/upstream-reuse.yaml
     with:
       pr_mode: true
       pr_head_sha: ${{ inputs.pr_head_sha || github.sha }}

@@ -10,6 +10,19 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 : "${EXPECTED_VLLM_COMMIT:?EXPECTED_VLLM_COMMIT is required}"
 : "${EXPECTED_SAIL_COMMIT:?EXPECTED_SAIL_COMMIT is required}"
 : "${TESTED_SAIL_COMMIT:?TESTED_SAIL_COMMIT is required}"
+: "${UPSTREAM_REUSE_TARGET:?UPSTREAM_REUSE_TARGET is required}"
+case "${UPSTREAM_REUSE_TARGET}" in
+    cpu)
+        export VLLM_TARGET_DEVICE=cpu VLLM_PLUGINS=""
+        reuse_markers="upstream_source and not ppu"
+        ;;
+    890p)
+        unset VLLM_TARGET_DEVICE
+        export VLLM_PLUGINS=ppu
+        reuse_markers=upstream_source
+        ;;
+    *) echo "Unsupported upstream reuse target" >&2; exit 2 ;;
+esac
 for commit in "${EXPECTED_VLLM_COMMIT}" "${EXPECTED_SAIL_COMMIT}" "${TESTED_SAIL_COMMIT}"; do
     [[ "${commit}" =~ ^[0-9a-f]{40}$ ]] || { echo "Reuse requires immutable source SHAs" >&2; exit 2; }
 done
@@ -20,7 +33,6 @@ printf 'tested_sha=%s\nwheel_source_sha=%s\nupstream_sha=%s\n' \
     "${TESTED_SAIL_COMMIT}" "${EXPECTED_SAIL_COMMIT}" "${EXPECTED_VLLM_COMMIT}"
 unset VLLM_VERSION PYTHONPATH GH_TOKEN GITHUB_TOKEN
 export VLLM_USE_RUST_FRONTEND=0 VLLM_USE_RUST_BENCH=0
-export VLLM_PLUGINS=ppu
 export EXPECTED_VLLM_COMMIT EXPECTED_SAIL_COMMIT TESTED_SAIL_COMMIT
 # All invocations are fail-closed, including manual consumers of donor wheels.
 python "${ROOT_DIR}/scripts/ci/ppu_wheel_manifest.py" verify "${WHEELS_DIR}" \
@@ -43,7 +55,7 @@ cleanup() {
     cd /tmp
     rm -rf "${WORK_DIR}"
     if [[ "${code}" == "0" ]]; then
-        echo "PPU UPSTREAM REUSE PASS (M890)"
+        echo "UPSTREAM REUSE PASS (${UPSTREAM_REUSE_TARGET})"
     fi
     exit "${code}"
 }
@@ -65,37 +77,53 @@ from pathlib import Path
 import numba
 import tblib
 import torch
+import torchvision
 import vllm
 import vllm_sail
 from vllm.platforms import current_platform
 from vllm_sail.compat import check_vllm_compatibility
 
 check_vllm_compatibility(force=True)
-assert current_platform.is_ppu(), current_platform
-assert torch.cuda.is_available(), "reuse requires a real PPU driver/device"
-count = torch.cuda.device_count()
-assert count == 1, f"M890 single-card acceptance requires one visible card, got {count}"
-name = torch.cuda.get_device_name(0)
-capability = tuple(torch.cuda.get_device_capability(0))
-platform_capability = current_platform.get_device_capability(0)
-assert capability == (8, 9), f"non-M890 device: {name}, capability={capability}"
-assert tuple(platform_capability) == (8, 9), platform_capability
-assert "890" in name.upper(), f"non-M890 device name: {name}"
+target = os.environ["UPSTREAM_REUSE_TARGET"]
+if target == "cpu":
+    assert current_platform.is_cpu(), current_platform
+    assert not torch.cuda.is_available(), "CPU reuse must not access PPU devices"
+    count = torch.cuda.device_count()
+    assert count == 0, f"CPU reuse requires zero visible devices, got {count}"
+    name = "CPU"
+    capability = None
+else:
+    assert target == "890p", target
+    assert current_platform.is_ppu(), current_platform
+    assert torch.cuda.is_available(), "reuse requires a real PPU driver/device"
+    count = torch.cuda.device_count()
+    assert count == 1, f"M890 single-card acceptance requires one visible card, got {count}"
+    name = torch.cuda.get_device_name(0)
+    capability = tuple(torch.cuda.get_device_capability(0))
+    platform_capability = current_platform.get_device_capability(0)
+    assert capability == (8, 9), f"non-M890 device: {name}, capability={capability}"
+    assert tuple(platform_capability) == (8, 9), platform_capability
+    assert "890" in name.upper(), f"non-M890 device name: {name}"
 paths = {"torch": torch.__file__, "vllm": vllm.__file__, "vllm_sail": vllm_sail.__file__}
 for package, path in paths.items():
     resolved = Path(path).resolve()
     assert not any(resolved.is_relative_to(root) for root in (Path("/source"), Path("/upstream"))), (package, path)
 identity = {
+    "target": target,
     "tested_sha": os.environ["TESTED_SAIL_COMMIT"],
     "wheel_source_sha": os.environ["EXPECTED_SAIL_COMMIT"],
     "upstream_sha": os.environ["EXPECTED_VLLM_COMMIT"],
+    "hf_home": os.environ["HF_HOME"],
+    "hf_hub_cache": os.environ["HF_HUB_CACHE"],
+    "checkpoint_root": os.environ["REUSE_CHECKPOINT_ROOT"],
     "device_name": name,
     "device_count": count,
     "capability": capability,
     "platform": type(current_platform).__name__,
-    "is_ppu": current_platform.is_ppu(),
+    "is_ppu": current_platform.is_ppu() if target == "890p" else False,
     "cuda_available": torch.cuda.is_available(),
     "torch_version": str(torch.__version__),
+    "torchvision_version": str(torchvision.__version__),
     "numba_version": str(numba.__version__),
     "tblib_version": str(tblib.__version__),
     "imports": paths,
@@ -109,7 +137,7 @@ PY
 
 cp -a "${ROOT_DIR}/tests" "${WORK_DIR}/tests"
 cp "${ROOT_DIR}/pyproject.toml" "${WORK_DIR}/pyproject.toml"
-python -m pytest tests/upstream_reuse -q -rs -m upstream_source \
+python -m pytest tests/upstream_reuse -q -rs -m "${reuse_markers}" \
     --require-upstream-source --strict-upstream-reuse \
-    --upstream-reuse-target=890p --upstream-reuse-report-dir=/artifacts/reuse \
+    --upstream-reuse-target="${UPSTREAM_REUSE_TARGET}" --upstream-reuse-report-dir=/artifacts/reuse \
     2>&1 | tee "${REUSE_RESULTS_DIR}/pytest.log"

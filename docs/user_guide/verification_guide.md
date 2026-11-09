@@ -100,16 +100,26 @@ jobs runs PPU inference or `tests/e2e`.
 
 ### Upstream test reuse
 
-The upstream reuse CPU job runs on PRs, pushes and manual dispatch, without a
-nightly schedule. It installs the dedicated `requirements/upstream-reuse.txt`
-tooling and a device-less upstream wheel, then selects the CPU platform with
-`VLLM_TARGET_DEVICE=cpu`. This is an upstream runtime diagnostic, not PPU
-qualification. `requirements/dev.txt` remains hardware-free.
+Upstream reuse runs through the authorized PPU pipeline, not automatically on
+PRs or a nightly schedule. CPU and M890 reuse run sequentially using
+runner-configured Docker runtimes and the same validated CI wheels. CPU reuse exposes no
+PPU devices, selects `VLLM_TARGET_DEVICE=cpu` and disables plugin loading. Both
+targets preserve the image's torch/torchvision stack; only the dedicated
+`requirements/upstream-reuse.txt` tooling is installed. CPU reuse is an upstream
+runtime diagnostic, not PPU qualification. `requirements/dev.txt` stays unchanged.
+
+Both containers read `HF_HOME=/nas_aisw/datasets/hf_cache` in offline mode. The
+cache and `/nas_aisw/datasets/checkpoints/LLM` are mounted read-only at their host
+paths, so snapshot symlinks into the checkpoint tree remain valid. Imported
+model code uses a writable temporary `HF_MODULES_CACHE`; no checkpoints are
+downloaded or modified. Missing model files still fail strict reuse, including
+cache entries whose snapshot directory exists but is empty. Diagnostics record
+the cache and checkpoint paths.
 
 In a prepared CPU environment with the exact upstream checkout:
 
 ```bash
-VLLM_TARGET_DEVICE=cpu VLLM_SOURCE_ROOT=/path/to/pinned/vllm \
+VLLM_PLUGINS='' VLLM_TARGET_DEVICE=cpu VLLM_SOURCE_ROOT=/path/to/pinned/vllm \
   python -m pytest tests/upstream_reuse -q -rs \
   -m "upstream_source and not ppu" --require-upstream-source \
   --strict-upstream-reuse --upstream-reuse-target=cpu \

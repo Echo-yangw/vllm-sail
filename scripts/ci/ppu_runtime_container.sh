@@ -3,9 +3,9 @@
 # Run wheel validation in an isolated PPU runtime container.
 set -Eeuo pipefail
 
-mode=${1:?Usage: ppu_runtime_container.sh pin-ut|model-test|model-accuracy|kernel-perf|upstream-reuse}
+mode=${1:?Usage: ppu_runtime_container.sh pin-ut|model-test|model-accuracy|kernel-perf|upstream-reuse|upstream-reuse-cpu}
 case "${mode}" in
-    pin-ut|model-test|model-accuracy|kernel-perf|upstream-reuse) ;;
+    pin-ut|model-test|model-accuracy|kernel-perf|upstream-reuse|upstream-reuse-cpu) ;;
     *) printf 'Unknown runtime mode: %s\n' "${mode}" >&2; exit 2 ;;
 esac
 
@@ -38,10 +38,17 @@ for commit in "${expected_vllm_commit}" "${expected_sail_commit}"; do
         exit 2
     }
 done
-[[ "${PPU_CI_DEVICE_COUNT}" =~ ^[1-8]$ ]] || {
-    echo "PPU_CI_DEVICE_COUNT must be between 1 and 8" >&2
-    exit 2
-}
+if [[ "${mode}" == "upstream-reuse-cpu" ]]; then
+    [[ "${PPU_CI_DEVICE_COUNT}" == "0" ]] || {
+        echo "CPU reuse must not expose PPU devices" >&2
+        exit 2
+    }
+else
+    [[ "${PPU_CI_DEVICE_COUNT}" =~ ^[1-8]$ ]] || {
+        echo "PPU_CI_DEVICE_COUNT must be between 1 and 8" >&2
+        exit 2
+    }
+fi
 
 # transformers builds the cache for remote model code under HF_MODULES_CACHE,
 # which defaults to ${HF_HOME}/modules. HF_HOME is mounted read-only below, so
@@ -83,21 +90,29 @@ image_id=$(bash "${source_dir}/scripts/ci/ppu_runtime_image.sh" 9>&-)
 printf '%s\n' "${image_id}" >"${artifact_dir}/runtime-image-id.txt"
 
 container="${prefix}"
-device_args=(
-    --device=/dev/alixpu
-    --device=/dev/alixpu_ctl
-    --device=/dev/alixpu_sep
-)
+device_args=()
+ipc_mode=private
+if [[ "${mode}" != "upstream-reuse-cpu" ]]; then
+    device_args=(
+        --device=/dev/alixpu
+        --device=/dev/alixpu_ctl
+        --device=/dev/alixpu_sep
+    )
+    ipc_mode=host
+fi
 visible=()
 for ((index = 0; index < PPU_CI_DEVICE_COUNT; index++)); do
     device_args+=(--device="/dev/alixpu_ppu${index}")
     visible+=("${index}")
 done
-visible_csv=$(IFS=,; echo "${visible[*]}")
+visible_csv=""
+if (( PPU_CI_DEVICE_COUNT > 0 )); then
+    visible_csv=$(IFS=,; echo "${visible[*]}")
+fi
 
 create=(
     docker create --name "${container}" --runtime=runc
-    --ipc=host --network=host
+    --ipc="${ipc_mode}" --network=host
     --mount "type=bind,source=${source_dir},target=/source,readonly"
     --mount "type=bind,source=${wheels_dir},target=/wheels,readonly"
     --mount "type=bind,source=${artifact_dir},target=/artifacts"
@@ -109,7 +124,9 @@ create=(
     --env EXPECTED_VLLM_COMMIT="${expected_vllm_commit}"
     --env EXPECTED_SAIL_COMMIT="${expected_sail_commit}"
 )
-create+=("${device_args[@]}")
+if (( PPU_CI_DEVICE_COUNT > 0 )); then
+    create+=("${device_args[@]}")
+fi
 
 # Resolve a catalog model id to the concrete snapshot directory of the offline
 # HF cache and echo that absolute path. The cache is a view tree: snapshots/
@@ -143,22 +160,50 @@ mount_snapshot_if_external() {
 }
 
 case "${mode}" in
-    upstream-reuse)
+    upstream-reuse|upstream-reuse-cpu)
         : "${PPU_CI_UPSTREAM_DIR:?PPU_CI_UPSTREAM_DIR is required for upstream-reuse}"
-        [[ "${PPU_CI_DEVICE_COUNT}" == "1" ]] || {
-            echo "upstream-reuse requires exactly one M890 device" >&2
-            exit 2
-        }
+        if [[ "${mode}" == "upstream-reuse-cpu" ]]; then
+            reuse_target=cpu
+        else
+            [[ "${PPU_CI_DEVICE_COUNT}" == "1" ]] || {
+                echo "upstream-reuse requires exactly one M890 device" >&2
+                exit 2
+            }
+            reuse_target=890p
+        fi
         upstream_dir=$(realpath "${PPU_CI_UPSTREAM_DIR}")
         [[ -f "${upstream_dir}/vllm/__init__.py" ]] &&
             [[ "$(git -c safe.directory="${upstream_dir}" -C "${upstream_dir}" rev-parse HEAD)" == "${expected_vllm_commit}" ]] || {
             echo "PPU CI upstream checkout does not match the tested pin" >&2
             exit 2
         }
+        : "${HF_HOME:?HF_HOME is required for upstream-reuse}"
+        : "${PPU_CI_REUSE_CHECKPOINT_ROOT:?PPU_CI_REUSE_CHECKPOINT_ROOT is required for upstream-reuse}"
+        hf_home=$(realpath "${HF_HOME}")
+        checkpoint_root=$(realpath "${PPU_CI_REUSE_CHECKPOINT_ROOT}")
+        [[ -d "${hf_home}/hub" ]] || {
+            echo "HF_HOME must contain the offline hub cache" >&2
+            exit 2
+        }
+        [[ -d "${checkpoint_root}" ]] || {
+            echo "Reuse checkpoint root is missing" >&2
+            exit 2
+        }
         create+=(
             --shm-size=8g
+            --mount "type=bind,source=${hf_home},target=${hf_home},readonly"
+            --mount "type=bind,source=${checkpoint_root},target=${checkpoint_root},readonly"
+            --env HF_HOME="${hf_home}"
+            --env HF_HUB_CACHE="${hf_home}/hub"
+            --env HUGGINGFACE_HUB_CACHE="${hf_home}/hub"
+            --env TRANSFORMERS_CACHE="${hf_home}/hub"
+            --env HF_MODULES_CACHE="${hf_modules_cache}"
+            --env HF_HUB_OFFLINE=1
+            --env TRANSFORMERS_OFFLINE=1
+            --env REUSE_CHECKPOINT_ROOT="${checkpoint_root}"
             --mount "type=bind,source=${upstream_dir},target=/upstream,readonly"
             --env VLLM_SOURCE_ROOT=/upstream
+            --env UPSTREAM_REUSE_TARGET="${reuse_target}"
             --env REUSE_RESULTS_DIR=/artifacts/reuse
             --env TESTED_SAIL_COMMIT="${PPU_CI_SOURCE_SHA}"
             --env VLLM_USE_RUST_FRONTEND=0

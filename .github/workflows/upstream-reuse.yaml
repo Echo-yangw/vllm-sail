@@ -1,98 +1,45 @@
 name: Upstream test reuse gate
 
-# Hardware-free PR/push/manual subset. M890 acceptance consumes validated CI
-# wheels through _ppu-upstream-reuse.yaml in the authorized PPU build pipeline.
-
 on:
-  pull_request:
-  push:
-    branches: [main, master]
-  workflow_dispatch:
+  workflow_call:
+    inputs:
+      pr_mode:
+        type: boolean
+        default: false
+      pr_head_sha:
+        type: string
+        default: ""
+      build_run_id:
+        required: true
+        type: string
+      wheel_source_sha:
+        type: string
+        default: ""
 
 permissions:
   contents: read
-
-concurrency:
-  group: upstream-reuse-${{ github.event.pull_request.number || github.ref }}-${{ github.run_id }}
-  cancel-in-progress: true
+  actions: read
+cache-mode: none
 
 jobs:
-  # ==============================================================
-  # cpu-reuse: PR-gating CPU subset, no hardware, pinned upstream
-  # ==============================================================
   cpu-reuse:
-    name: Category-5 upstream reuse (CPU subset)
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
+    name: CPU upstream reuse
+    uses: ./.github/workflows/_ppu-upstream-reuse.yaml
+    with:
+      target: cpu
+      pr_mode: ${{ inputs.pr_mode }}
+      pr_head_sha: ${{ inputs.pr_head_sha }}
+      build_run_id: ${{ inputs.build_run_id }}
+      wheel_source_sha: ${{ inputs.wheel_source_sha }}
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Resolve the pinned upstream ref
-        id: upstream
-        run: |
-          pin="$(tr -d '[:space:]' < .github/vllm-main-verified.commit)"
-          [[ "${pin}" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Invalid upstream ref: ${pin}"; exit 1; }
-          echo "ref=${pin}" >> "$GITHUB_OUTPUT"
-
-      - name: Check out upstream source at the pinned commit
-        uses: actions/checkout@v4
-        with:
-          repository: vllm-project/vllm
-          ref: ${{ steps.upstream.outputs.ref }}
-          path: .upstream/vllm
-          persist-credentials: false
-
-      - name: Verify the tested upstream revision
-        env:
-          EXPECTED_SHA: ${{ steps.upstream.outputs.ref }}
-        run: test "$(git -C .upstream/vllm rev-parse HEAD)" = "$EXPECTED_SHA"
-
-      - name: Purge pip cache (prevent cache-poisoning vector)
-        run: rm -rf ~/.cache/pip
-
-      - name: Install build dependencies and dedicated reuse tooling
-        run: python -m pip install --no-cache-dir -r requirements/build.txt -r requirements/upstream-reuse.txt
-
-      - name: Install a device-less torch and pinned vLLM wheel
-        run: |
-          set -Eeuo pipefail
-          python -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch
-          VLLM_TARGET_DEVICE=empty python -m pip install --no-cache-dir --no-build-isolation .upstream/vllm
-          cd "$RUNNER_TEMP"
-          python -c "import vllm, torch, tblib, numba; print('vllm', vllm.__version__, vllm.__file__, 'torch', torch.__version__, 'numba', numba.__version__, 'tblib', tblib.__version__)"
-
-      - name: Prepare a tests-only runtime view
-        id: view
-        run: |
-          view="$(mktemp -d "${RUNNER_TEMP}/cpu-reuse.XXXXXX")"
-          cp -a tests "$view/tests"
-          cp pyproject.toml "$view/pyproject.toml"
-          echo "path=$view" >> "$GITHUB_OUTPUT"
-
-      - name: Run the CPU reuse subset (fail-closed)
-        working-directory: ${{ steps.view.outputs.path }}
-        env:
-          VLLM_SOURCE_ROOT: ${{ github.workspace }}/.upstream/vllm
-          VLLM_TARGET_DEVICE: cpu
-          REUSE_REPORT_DIR: ${{ runner.temp }}/cpu-reuse-report
-        run: |
-          unset PYTHONPATH
-          python -m pytest tests/upstream_reuse -q -rs \
-            -m "upstream_source and not ppu" --require-upstream-source \
-            --strict-upstream-reuse --upstream-reuse-target=cpu \
-            --upstream-reuse-report-dir="$REUSE_REPORT_DIR"
-
-      - name: Upload CPU reuse diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: cpu-upstream-reuse-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/cpu-reuse-report/**
-          if-no-files-found: warn
-          retention-days: 14
+  m890-reuse:
+    name: M890 upstream reuse
+    needs: cpu-reuse
+    if: ${{ !cancelled() }}
+    uses: ./.github/workflows/_ppu-upstream-reuse.yaml
+    with:
+      target: 890p
+      pr_mode: ${{ inputs.pr_mode }}
+      pr_head_sha: ${{ inputs.pr_head_sha }}
+      build_run_id: ${{ inputs.build_run_id }}
+      wheel_source_sha: ${{ inputs.wheel_source_sha }}

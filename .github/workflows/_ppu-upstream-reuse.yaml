@@ -3,6 +3,10 @@ name: PPU upstream test reuse
 on:
   workflow_call:
     inputs:
+      target:
+        description: Execution target, cpu or 890p
+        type: string
+        required: true
       pr_mode:
         type: boolean
         default: false
@@ -25,7 +29,7 @@ cache-mode: none
 
 jobs:
   upstream-reuse:
-    name: Upstream reuse (M890 single card)
+    name: Upstream reuse (${{ inputs.target }})
     runs-on: 8-ppu-m890p
     timeout-minutes: 90
     env:
@@ -36,13 +40,16 @@ jobs:
     steps:
       - name: Prepare private runtime directories and Git configuration
         id: runtime
+        env:
+          REUSE_TARGET: ${{ inputs.target }}
         run: |
+          case "$REUSE_TARGET" in cpu|890p) ;; *) exit 2 ;; esac
           config="$(mktemp "${RUNNER_TEMP}/git-config.XXXXXX")"
           wheels="$(mktemp -d "${RUNNER_TEMP}/ppu-reuse-wheels.XXXXXX")"
           artifacts="$(mktemp -d "${RUNNER_TEMP}/ppu-reuse-artifacts.XXXXXX")"
-          source_rel=".ppu-reuse-source-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          source_rel=".ppu-reuse-source-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${REUSE_TARGET}"
           source="${GITHUB_WORKSPACE}/${source_rel}"
-          upstream_rel=".ppu-reuse-upstream-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          upstream_rel=".ppu-reuse-upstream-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${REUSE_TARGET}"
           upstream="${GITHUB_WORKSPACE}/${upstream_rel}"
           {
             printf 'GIT_CONFIG_GLOBAL=%s\n' "$config"
@@ -109,23 +116,32 @@ jobs:
           repository: ${{ github.repository }}
           github-token: ${{ github.token }}
 
-      - name: Run strict M890 reuse in the preloaded CUDA-compatible runtime
+      - name: Run strict reuse in the runner-configured runtime
         env:
+          REUSE_TARGET: ${{ inputs.target }}
+          HF_HOME: /nas_aisw/datasets/hf_cache
+          PPU_CI_REUSE_CHECKPOINT_ROOT: /nas_aisw/datasets/checkpoints/LLM
           PPU_CI_SOURCE_DIR: ${{ steps.runtime.outputs.source }}
           PPU_CI_SOURCE_SHA: ${{ inputs.pr_head_sha || github.sha }}
           PPU_CI_UPSTREAM_DIR: ${{ steps.runtime.outputs.upstream }}
           PPU_CI_WHEELS_DIR: ${{ steps.runtime.outputs.wheels }}
           PPU_CI_ARTIFACT_DIR: ${{ steps.runtime.outputs.artifacts }}
-          PPU_CI_DEVICE_COUNT: "1"
+          PPU_CI_DEVICE_COUNT: ${{ inputs.target == 'cpu' && '0' || '1' }}
           PPU_CI_REQUIRE_PR_ARTIFACT: ${{ inputs.pr_mode }}
           PPU_CI_WHEEL_SOURCE_SHA: ${{ inputs.wheel_source_sha || inputs.pr_head_sha || github.sha }}
-        run: bash "${PPU_CI_SOURCE_DIR}/scripts/ci/ppu_runtime_container.sh" upstream-reuse
+        run: |
+          case "$REUSE_TARGET" in
+            cpu) mode=upstream-reuse-cpu ;;
+            890p) mode=upstream-reuse ;;
+            *) exit 2 ;;
+          esac
+          bash "${PPU_CI_SOURCE_DIR}/scripts/ci/ppu_runtime_container.sh" "$mode"
 
       - name: Upload upstream reuse diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ppu-upstream-reuse-m890-${{ github.run_id }}-${{ github.run_attempt }}
+          name: upstream-reuse-${{ inputs.target }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ steps.runtime.outputs.artifacts }}/**
             ${{ steps.runtime.outputs.wheels }}/wheel-manifest.json
