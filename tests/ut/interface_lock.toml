@@ -11,7 +11,7 @@
 schema = 1
 vllm_version_range = ">=0.31.0,<0.32.0"
 key_interface_count = 10
-target_count = 293
+target_count = 294
 
 [[key_interface]]
 symbol = "vllm.platforms.interface.PlatformEnum"
@@ -1784,6 +1784,14 @@ module = "vllm/models/glm5next/common/model.py"
 symbol = "_try_load_fp8_attn_proj"
 present = true
 fingerprint = "sha256:bd40125e58ea071dbf6f1414351fb09932ed2c0fbbd75256cf52842b24fbfc30"
+
+[[patch_target]]
+name = "vllm.models.glm5next.common.mtp._try_load_fp8_attn_proj"
+kind = "module"
+module = "vllm/models/glm5next/common/mtp.py"
+symbol = "_try_load_fp8_attn_proj"
+present = true
+fingerprint = "sha256:f338cceb0075f4943079f718dec31d7b343d69c4e4b0a05881e83559cd6958b7"
 
 [[patch_target]]
 name = "vllm.models.glm5next.nvidia.ops.kpool_compress.fwht128_quant_fp8"

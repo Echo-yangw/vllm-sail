@@ -277,3 +277,12 @@ def test_quantised_fp8_target_is_left_to_the_regular_loader():
             name, tensor, buf, params_dict, loaded, 0
         )
     assert buf == {}
+
+
+def test_mtp_draft_binding_is_not_left_on_the_block_only_path():
+    """The MTP draft imports this helper by name, so its module-level binding
+    must be the replacement too: a draft that kept the original forces a
+    per-output-channel FP8 projection through the block-FP8 map and dies on the
+    broadcast while loading, which is how enabling MTP broke server startup."""
+    mtp = pytest.importorskip("vllm.models.glm5next.common.mtp")
+    assert mtp._try_load_fp8_attn_proj is int8_patch._try_load_fp8_attn_proj

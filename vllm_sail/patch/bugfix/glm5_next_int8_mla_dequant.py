@@ -37,6 +37,8 @@ unchanged.
 
 from __future__ import annotations
 
+import importlib
+
 import torch
 from vllm.models.glm5next.common import model as _glm5next_model
 
@@ -197,3 +199,45 @@ def _try_load_fp8_attn_proj(
         param.weight_loader(param, weight_bf16, shard_id)
     loaded_params.add(target_w)
     return True
+
+
+# The MTP draft loads through its own copy of this helper: ``common.mtp`` binds
+# it with ``from .model import ...``, so a module imported before this plugin
+# registered keeps the original object. That path only knows the block-FP8 map,
+# so a per-output-channel FP8 export reaches ``_dequant_fp8_block`` with an
+# ``[out, 1]`` scale, derives a block size equal to the input width and dies on
+# a broadcast RuntimeError while loading the draft layer -- the same checkpoint
+# loads through the text tower without trouble. Import the consumers here so the
+# rebinding, and the patch inventory, never depend on which module happened to
+# be imported first; a runtime without the draft family simply skips it.
+_CONSUMERS = (
+    "vllm.models.glm5next.common.mtp",
+    "vllm.models.glm5next.nvidia.mtp",
+)
+
+for _consumer_name in _CONSUMERS:
+    try:
+        _consumer = importlib.import_module(_consumer_name)
+    except ImportError:
+        continue
+    if getattr(_consumer, "_try_load_fp8_attn_proj", None) is not (
+        _upstream_try_load_fp8_attn_proj
+    ):
+        continue
+    patch(
+        _consumer_name,
+        "_try_load_fp8_attn_proj",
+        reason=(
+            "The MTP draft binds this helper by name at import time, so an "
+            "already-imported consumer keeps the block-FP8-only original "
+            "and cannot load a per-output-channel FP8 projection: the "
+            "broadcast dies on the whole-layer scale. Rebind the alias to "
+            "the same replacement the model module got."
+        ),
+        affected_versions=_AFFECTED,
+        remove_when=(
+            "upstream glm5next calls this helper through the model module "
+            "instead of an import-time alias, or handles per-channel FP8 "
+            "MLA projections natively."
+        ),
+    )(_try_load_fp8_attn_proj)
