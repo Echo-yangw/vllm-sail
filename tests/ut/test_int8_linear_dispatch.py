@@ -208,10 +208,12 @@ def test_dispatch_preserves_bias_priority_layout_and_output_shape(
         )
 
 
+@pytest.mark.parametrize("weight_shape", [(128, 64), (1, 64)])
 @pytest.mark.parametrize("backend", [None, "deepgemm", "acext", "triton"])
-def test_weight_preparation_keeps_backend_layout(kernel, backend):
+def test_weight_preparation_keeps_backend_layout(kernel, backend, weight_shape):
     instance, environment, _ = kernel
-    weight, scale = Mock(spec=["data", "t"]), Mock(spec=["data"])
+    weight = Mock(spec=["data", "t", "shape"], shape=weight_shape)
+    scale = Mock(spec=["data"])
     layer = SimpleNamespace(weight=weight, scale=scale, logical_widths=[128])
     parameters = []
 
@@ -242,12 +244,16 @@ def test_weight_preparation_keeps_backend_layout(kernel, backend):
 
     instance.process_weights_after_loading(layer)
 
-    row_major = backend != "triton"
+    # acext and DeepGEMM need both weight dims to be multiples of 16.
+    aligned = weight_shape[0] % 16 == 0 and weight_shape[1] % 16 == 0
+    row_major = aligned and backend != "triton"
     assert instance.weight_RowMajor is row_major
     assert parameters == [
         ("weight", weight.data if row_major else weight.t.return_value.data),
         ("scale", scale.data),
     ]
     assert weight.t.call_count == int(not row_major)
-    assert instance.use_acext_int8_gemm is (backend in (None, "acext"))
-    assert instance.use_deepgemm_int8_gemm is (backend in (None, "deepgemm"))
+    assert instance.use_acext_int8_gemm is (aligned and backend in (None, "acext"))
+    assert instance.use_deepgemm_int8_gemm is (
+        aligned and backend in (None, "deepgemm")
+    )
