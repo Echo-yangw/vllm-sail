@@ -1537,6 +1537,8 @@ def test_reuse_preflight_rejects_wrong_device_and_checkout_imports(
         ),
     )
     modules = {
+        "numba": types.SimpleNamespace(__version__="0.65.0"),
+        "tblib": types.SimpleNamespace(__version__="3.1.0"),
         "torch": torch,
         "vllm": types.SimpleNamespace(__file__=values["vllm_path"]),
         "vllm_sail": types.SimpleNamespace(__file__=values["sail_path"]),
