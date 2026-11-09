@@ -477,6 +477,145 @@ def test_get_quant_method_ignores_experts_and_channelwise_linear(
     _Platform.ppu = True
 
 
+def _stub_compressed_tensors(monkeypatch: pytest.MonkeyPatch) -> tuple[type, type]:
+    """Register the lazily imported CompressedTensors stand-ins.
+
+    Returns ``(linear_method_cls, scheme_cls)``.
+    """
+    ct = types.ModuleType("compressed_tensors.quantization")
+
+    class QuantizationArgs:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class QuantizationStrategy:
+        CHANNEL = "channel"
+
+    class QuantizationType:
+        FLOAT = "float"
+
+    ct.QuantizationArgs = QuantizationArgs  # type: ignore[attr-defined]
+    ct.QuantizationStrategy = QuantizationStrategy  # type: ignore[attr-defined]
+    ct.QuantizationType = QuantizationType  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "compressed_tensors.quantization", ct)
+    monkeypatch.setitem(
+        sys.modules, "compressed_tensors", types.ModuleType("compressed_tensors")
+    )
+
+    ct_pkg = types.ModuleType(
+        "vllm.model_executor.layers.quantization.compressed_tensors.compressed_tensors"
+    )
+
+    class CompressedTensorsLinearMethod:
+        def __init__(self, quant_config):
+            self.quant_config = quant_config
+
+    ct_pkg.CompressedTensorsLinearMethod = CompressedTensorsLinearMethod  # type: ignore[attr-defined]
+    _register_chain(
+        monkeypatch,
+        "vllm.model_executor.layers.quantization.compressed_tensors.compressed_tensors",
+        ct_pkg,
+    )
+    schemes = types.ModuleType(
+        "vllm.model_executor.layers.quantization.compressed_tensors.schemes."
+        "compressed_tensors_w8a8_fp8"
+    )
+
+    class CompressedTensorsW8A8Fp8:
+        def __init__(self, weight_quant, is_static_input_scheme):
+            self.weight_quant = weight_quant
+            self.is_static_input_scheme = is_static_input_scheme
+
+    schemes.CompressedTensorsW8A8Fp8 = CompressedTensorsW8A8Fp8  # type: ignore[attr-defined]
+    _register_chain(
+        monkeypatch,
+        "vllm.model_executor.layers.quantization.compressed_tensors.schemes."
+        "compressed_tensors_w8a8_fp8",
+        schemes,
+    )
+    return CompressedTensorsLinearMethod, CompressedTensorsW8A8Fp8
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("model.language_model.layers.7.mlp.gate", "layers.7.mlp.gate"),
+        ("language_model.model.layers.7.mlp.gate", "layers.7.mlp.gate"),
+        ("model.layers.45.mlp.gate", "layers.45.mlp.gate"),
+        ("model.layers.45.mtp_block.mlp.gate", "layers.45.mlp.gate"),
+        ("layers.45.mlp.gate", "layers.45.mlp.gate"),
+        ("model.visual.blocks.0.mlp.gate", "visual.blocks.0.mlp.gate"),
+    ],
+)
+def test_normalize_layer_path_keeps_the_layer_index(mxfp4_module, path, expected):
+    assert mxfp4_module.normalize_layer_path(path) == expected
+
+
+def test_channelwise_scheme_reaches_the_text_only_mtp_draft(
+    monkeypatch: pytest.MonkeyPatch, mxfp4_module
+) -> None:
+    """A mixed export lists dense FP8-channelwise layers by checkpoint name; the
+    mapped entry matches the multimodal text tower but not the text-only MTP
+    draft, whose prefixes lose the tower namespace. Both must land on the
+    channelwise scheme, and only on their own layer index."""
+    state, modules = _build_stub_vllm(monkeypatch)
+    method_cls, scheme_cls = _stub_compressed_tensors(monkeypatch)
+    mxfp4_module.install()
+    Mxfp4Config = modules["quant_mxfp4"].Mxfp4Config
+    LinearBase = sys.modules["vllm.model_executor.layers.linear"].LinearBase
+    _Platform.ppu = True
+
+    config = Mxfp4Config(
+        fp8_channelwise_layers=[
+            "language_model.model.layers.45.mlp.shared_experts.down_proj"
+        ]
+    )
+
+    draft = object.__new__(LinearBase)
+    method = config.get_quant_method(
+        draft, "model.layers.45.mlp.shared_experts.down_proj"
+    )
+    assert isinstance(method, method_cls)
+    assert isinstance(draft.scheme, scheme_cls)
+
+    # The parameter space of the same module carries the MTP attribute.
+    attributed = object.__new__(LinearBase)
+    assert isinstance(
+        config.get_quant_method(
+            attributed, "model.layers.45.mtp_block.mlp.shared_experts.down_proj"
+        ),
+        method_cls,
+    )
+
+    # The text tower keeps matching through the mapped name as before.
+    tower = object.__new__(LinearBase)
+    assert isinstance(
+        config.get_quant_method(
+            tower, "language_model.model.layers.45.mlp.shared_experts.down_proj"
+        ),
+        method_cls,
+    )
+
+    # Layer-exact: neither another index nor another module of the same layer.
+    for prefix in (
+        "model.layers.44.mlp.shared_experts.down_proj",
+        "model.layers.45.mlp.shared_experts.gate_up_proj",
+        "language_model.model.layers.44.mlp.shared_experts.down_proj",
+    ):
+        other = object.__new__(LinearBase)
+        assert config.get_quant_method(other, prefix) == "upstream-method"
+        assert state.upstream_get_quant_method[-1][0] is other
+        assert not hasattr(other, "scheme")
+
+    _Platform.ppu = False
+    assert (
+        config.get_quant_method(
+            object.__new__(LinearBase), "model.layers.45.mlp.shared_experts.down_proj"
+        )
+        == "upstream-method"
+    )
+
+
 def test_apply_vllm_mapper_remaps_channelwise_on_ppu(
     monkeypatch: pytest.MonkeyPatch, mxfp4_module
 ) -> None:
