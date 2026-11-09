@@ -11,8 +11,10 @@ priority lists and activation keys are already covered by
 * ``Mxfp4Config`` gains ``fp8_channelwise_layers`` (PPU dense layers quantized
   FP8 channelwise via a CompressedTensors scheme), reads ``ignore`` /
   ``fp8_channelwise_layers`` in ``from_config``, routes ignored ``RoutedExperts``
-  to ``UnquantizedFusedMoEMethod`` (mixed-precision MTP blocks), and remaps the
-  ignored and channelwise lists in ``apply_vllm_mapper``.
+  to ``UnquantizedFusedMoEMethod`` (mixed-precision MTP blocks), remaps the
+  ignored and channelwise lists in ``apply_vllm_mapper`` and matches a dense
+  Linear in the checkpoint, mapped-runtime and text-only MTP-draft naming
+  spaces.
 * ``GptOssMxfp4MoEMethod`` / ``Mxfp4MoEMethod`` select W4A4
   (``kMxfp4Dynamic`` activations) on PPU sm90+, falling back to W4A16 on sm80.
 * ``Mxfp4MoEMethod.get_fused_moe_quant_config`` threads ``swiglu_alpha`` /
@@ -27,6 +29,7 @@ CPU runner, patches install when ``install()`` runs.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any
 
 from vllm_sail.patch.utils import patch
@@ -137,6 +140,27 @@ METADATA = (
 
 _installed = False
 
+#: A mixed MXFP4 + FP8-channelwise export names the same projection in three
+#: spaces: the checkpoint quant lists (``model.language_model.layers.N.``), the
+#: runtime text tower after the weight mapper (``language_model.model.layers.N.``)
+#: and the text-only MTP draft (``model.layers.N.``, whose parameters live under
+#: an extra ``mtp_block`` attribute). Strip the tower namespace and the MTP
+#: attribute so one entry can match its own layer in all three spaces, while the
+#: layer index stays in the path and keeps any other layer from matching.
+_TOWER_PREFIX = re.compile(
+    r"^(?:model\.language_model\.|language_model\.model\.|language_model\.|model\.)"
+)
+
+
+def normalize_layer_path(path: str) -> str:
+    """Tower-free layer path, with the layer index preserved."""
+    return _TOWER_PREFIX.sub("", path.replace(".mtp_block.", "."))
+
+
+def channelwise_paths(layers: list[str]) -> list[str]:
+    """Channelwise entries in their tower-free form."""
+    return [normalize_layer_path(name) for name in layers]
+
 
 def _ppu_backends(kind: str = "all") -> tuple[Any, ...]:
     """The PPU enum members, or () if the registry has not extended the enum."""
@@ -232,41 +256,55 @@ def install() -> None:
                 fused_mapping=self.packed_modules_mapping,
             ):
                 return UnquantizedFusedMoEMethod(layer.moe_config)
-        elif (
-            isinstance(layer, LinearBase)
-            and current_platform.is_ppu()
-            and self.fp8_channelwise_layers
-            and is_layer_skipped(
-                prefix=prefix,
-                ignored_layers=self.fp8_channelwise_layers,
-                fused_mapping=self.packed_modules_mapping,
-                match_mode="substring",
+        elif isinstance(layer, LinearBase) and current_platform.is_ppu():
+            # PPU MODIFICATION: begin
+            # Match the list in the naming space it was mapped into first, then
+            # retry tower-free so the text-only MTP draft -- whose prefixes are
+            # ``model.layers.N.*`` and whose parameters sit under ``mtp_block``
+            # -- finds the scheme its own layer was exported with. Without the
+            # retry the draft's shared-expert Linears build unquantized, carry
+            # no ``weight_scale`` parameter, and weight loading aborts on a
+            # KeyError for the scale the checkpoint does provide.
+            matched = bool(self.fp8_channelwise_layers) and (
+                is_layer_skipped(
+                    prefix=prefix,
+                    ignored_layers=self.fp8_channelwise_layers,
+                    fused_mapping=self.packed_modules_mapping,
+                    match_mode="substring",
+                )
+                or is_layer_skipped(
+                    prefix=normalize_layer_path(prefix),
+                    ignored_layers=channelwise_paths(self.fp8_channelwise_layers),
+                    fused_mapping=self.packed_modules_mapping,
+                    match_mode="substring",
+                )
             )
-        ):
-            from compressed_tensors.quantization import (
-                QuantizationArgs,
-                QuantizationStrategy,
-                QuantizationType,
-            )
-            from vllm.model_executor.layers.quantization.compressed_tensors.compressed_tensors import (  # noqa: E501
-                CompressedTensorsLinearMethod,
-            )
-            from vllm.model_executor.layers.quantization.compressed_tensors.schemes.compressed_tensors_w8a8_fp8 import (  # noqa: E501
-                CompressedTensorsW8A8Fp8,
-            )
+            # PPU MODIFICATION: end
+            if matched:
+                from compressed_tensors.quantization import (
+                    QuantizationArgs,
+                    QuantizationStrategy,
+                    QuantizationType,
+                )
+                from vllm.model_executor.layers.quantization.compressed_tensors.compressed_tensors import (  # noqa: E501
+                    CompressedTensorsLinearMethod,
+                )
+                from vllm.model_executor.layers.quantization.compressed_tensors.schemes.compressed_tensors_w8a8_fp8 import (  # noqa: E501
+                    CompressedTensorsW8A8Fp8,
+                )
 
-            channelwise_args = QuantizationArgs(
-                strategy=QuantizationStrategy.CHANNEL,
-                type=QuantizationType.FLOAT,
-                num_bits=8,
-                symmetric=True,
-            )
-            scheme = CompressedTensorsW8A8Fp8(
-                weight_quant=channelwise_args,
-                is_static_input_scheme=False,
-            )
-            layer.scheme = scheme
-            return CompressedTensorsLinearMethod(self)
+                channelwise_args = QuantizationArgs(
+                    strategy=QuantizationStrategy.CHANNEL,
+                    type=QuantizationType.FLOAT,
+                    num_bits=8,
+                    symmetric=True,
+                )
+                scheme = CompressedTensorsW8A8Fp8(
+                    weight_quant=channelwise_args,
+                    is_static_input_scheme=False,
+                )
+                layer.scheme = scheme
+                return CompressedTensorsLinearMethod(self)
         return _upstream_get_quant_method(self, layer, prefix)
 
     @patch(
