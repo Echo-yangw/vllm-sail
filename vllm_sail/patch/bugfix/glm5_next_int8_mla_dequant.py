@@ -41,6 +41,12 @@ from vllm_sail.patch.utils import patch
 
 _MODULE = "vllm.models.glm5next.common.model"
 _TARGET = "_try_load_fp8_attn_proj"
+#: Modules that bind the helper by name at import time; the MTP draft loads
+#: through its own binding, so it needs the alias rewritten as well.
+_CONSUMERS = (
+    "vllm.models.glm5next.common.mtp",
+    "vllm.models.glm5next.nvidia.mtp",
+)
 _AFFECTED = ">=0.32.0,<0.33.0"
 _installed = False
 #: True when the upstream glm5next model cannot be imported (older transformers).
@@ -192,6 +198,8 @@ def install() -> None:
         )
         return
 
+    _upstream_try_load_fp8_attn_proj = getattr(glm5next_model, _TARGET)
+
     patch(
         _MODULE,
         _TARGET,
@@ -215,4 +223,40 @@ def install() -> None:
             "vllm-for-sail carries an equivalent load-time dequantisation."
         ),
     )(_try_load_fp8_attn_proj)
+
+    # The MTP draft binds this helper with ``from .model import ...``, so a
+    # consumer module imported before this registration keeps the original
+    # object. That path only knows the block-FP8 map, so a per-output-channel
+    # FP8 export reaches the block dequant with an ``[out, 1]`` scale, derives a
+    # block size equal to the input width and dies on a broadcast RuntimeError
+    # while the draft layer loads -- the same checkpoint loads through the text
+    # tower without trouble. Import the consumers here so the rebinding, and the
+    # patch inventory, never depend on which module happened to be imported
+    # first; a runtime without the draft family simply skips it.
+    import importlib
+
+    for consumer_name in _CONSUMERS:
+        try:
+            consumer = importlib.import_module(consumer_name)
+        except ImportError:
+            continue
+        if getattr(consumer, _TARGET, None) is not _upstream_try_load_fp8_attn_proj:
+            continue
+        patch(
+            consumer_name,
+            _TARGET,
+            reason=(
+                "The MTP draft binds this helper by name at import time, so an "
+                "already-imported consumer keeps the block-FP8-only original "
+                "and cannot load a per-output-channel FP8 projection: the "
+                "broadcast dies on the whole-layer scale. Rebind the alias to "
+                "the same replacement the model module got."
+            ),
+            affected_versions=_AFFECTED,
+            remove_when=(
+                "upstream glm5next calls this helper through the model module "
+                "instead of an import-time alias, or handles per-channel FP8 "
+                "MLA projections natively."
+            ),
+        )(_try_load_fp8_attn_proj)
     _installed = True
