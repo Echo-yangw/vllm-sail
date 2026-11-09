@@ -74,7 +74,7 @@ jobs:
         run: rm -rf ~/.cache/pip
       - name: Install CPU-only test tooling
         run: python -m pip install --no-cache-dir -r requirements/dev.txt
-      - name: Check feature contracts against the selected source
+      - name: Check feature and interface contracts against the selected source
         env:
           VLLM_SOURCE_ROOT: ${{ github.workspace }}/.upstream/vllm
         run: >-
