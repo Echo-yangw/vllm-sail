@@ -114,16 +114,16 @@ def _validate_pcp_config():
     )
 
 
-def test_pcp_config_accepts_only_the_initial_supported_scope():
+def test_pcp_config_accepts_supported_scope():
     validate = _validate_pcp_config()
     validate(_pcp_config())
+    validate(_pcp_config(**{"cache_config.enable_prefix_caching": True}))
 
     for override, message in (
-        ({"cache_config.enable_prefix_caching": True}, "no prefix caching"),
         ({"parallel_config.decode_context_parallel_size": 2}, "DCP=PP=DP=1"),
         ({"parallel_config.nnodes": 2}, "one node"),
-        ({"speculative_config": object()}, "no prefix caching"),
-        ({"kernel_config.moe_backend": "mega_moe"}, "no prefix caching"),
+        ({"speculative_config": object()}, "no speculation"),
+        ({"kernel_config.moe_backend": "mega_moe"}, "no speculation"),
     ):
         with pytest.raises(NotImplementedError, match=message):
             validate(_pcp_config(**override))
@@ -727,3 +727,196 @@ def test_shared_metadata_routes_through_real_model_state_and_attention_groups(
     assert outputs[0]["swa"][0] is not outputs[1]["swa"][0]
     assert outputs[0]["swa"][2].tolist() == [1, 1, 1, 1]
     assert outputs[1]["swa"][2].tolist() == [2, 3, 3, 2, 3, 3]
+
+
+def _v4_scheduler_prefix_hits(model_path, pcp_size, retention):
+    import torch
+    from vllm import SamplingParams
+    from vllm.config import (
+        CacheConfig,
+        CompilationConfig,
+        CUDAGraphMode,
+        ModelConfig,
+        ParallelConfig,
+        SchedulerConfig,
+        VllmConfig,
+        set_current_vllm_config,
+    )
+    from vllm.models.deepseek_v4.attention import (
+        DeepseekV4Attention,
+        DeepseekV4IndexerCache,
+    )
+    from vllm.models.deepseek_v4.compressor import CompressorStateCache
+    from vllm.utils.hashing import sha256
+    from vllm.v1.attention.backends.mla.indexer import DeepseekV4IndexerBackend
+    from vllm.v1.attention.backends.mla.sparse_swa import DeepseekV4SWACache
+    from vllm.v1.attention.backends.utils import resolve_kv_cache_layout
+    from vllm.v1.core import kv_cache_utils
+    from vllm.v1.core.kv_cache_planning import (
+        get_global_kv_cache_groups,
+        get_kv_cache_configs,
+    )
+    from vllm.v1.core.sched.scheduler import Scheduler
+    from vllm.v1.outputs import ModelRunnerOutput
+    from vllm.v1.request import Request
+    from vllm.v1.structured_output import StructuredOutputManager
+
+    config = VllmConfig(
+        model_config=ModelConfig(
+            model=str(model_path),
+            max_model_len=8192,
+            dtype="float32",
+            skip_tokenizer_init=True,
+        ),
+        cache_config=CacheConfig(
+            block_size=256,
+            cache_dtype="fp8_ds_mla",
+            enable_prefix_caching=True,
+            prefix_cache_retention_interval=retention,
+        ),
+        parallel_config=ParallelConfig(
+            prefill_context_parallel_size=pcp_size,
+            distributed_executor_backend="uni",
+        ),
+        scheduler_config=SchedulerConfig(
+            max_num_batched_tokens=1024,
+            max_num_seqs=4,
+            max_model_len=8192,
+            is_encoder_decoder=False,
+            enable_chunked_prefill=True,
+        ),
+        compilation_config=CompilationConfig(cudagraph_mode=CUDAGraphMode.NONE),
+    )
+    cache_config = config.cache_config
+    specs = {}
+    with set_current_vllm_config(config):
+        for layer, ratio in ((0, 1), (1, 4), (2, 128)):
+            swa = DeepseekV4SWACache(
+                head_dim=512,
+                window_size=128,
+                dtype=torch.uint8,
+                prefix=f"{layer}.swa",
+                cache_config=cache_config,
+            )
+            specs[swa.prefix] = swa.get_kv_cache_spec(config)
+            if ratio == 1:
+                continue
+            attention = NS(
+                compress_ratio=ratio,
+                kv_cache_dtype="fp8_ds_mla",
+                kv_cache_torch_dtype=torch.uint8,
+                head_dim=512,
+            )
+            specs[f"{layer}.attn"] = DeepseekV4Attention.get_kv_cache_spec(
+                attention, config
+            )
+            states = [(f"{layer}.attn_state", 2 * (1 + (ratio == 4)) * 512)]
+            if ratio == 4:
+                indexer = DeepseekV4IndexerCache(
+                    head_dim=68,
+                    dtype=torch.uint8,
+                    prefix=f"{layer}.indexer",
+                    cache_config=cache_config,
+                    compress_ratio=ratio,
+                )
+                specs[indexer.prefix] = indexer.get_kv_cache_spec(config)
+                states.append((f"{layer}.indexer_state", 2 * 2 * 128))
+            for prefix, state_dim in states:
+                state = CompressorStateCache(
+                    state_dim=state_dim,
+                    dtype=torch.float32,
+                    compress_ratio=ratio,
+                    prefix=prefix,
+                )
+                specs[prefix] = state.get_kv_cache_spec(config)
+
+    layouts = [
+        layout.name for layout in DeepseekV4IndexerBackend.supported_kv_cache_layouts()
+    ]
+    resolve_kv_cache_layout(config, [layouts], list(specs.values()))
+    groups = get_global_kv_cache_groups(config, [specs])
+    kv_cache_config = kv_cache_utils.generate_scheduler_kv_cache_config(
+        get_kv_cache_configs(config, [specs], [1 << 30], groups)
+    )
+    cache_config.num_gpu_blocks = kv_cache_config.num_blocks
+    cache_config.block_size = min(
+        group.kv_cache_spec.block_size
+        for group in kv_cache_config.kv_cache_groups
+        if group.kv_cache_spec.prefix_cacheable
+    )
+    kv_cache_utils.update_kv_cache_capacity(config, kv_cache_config)
+    block_size, hash_block_size = kv_cache_utils.resolve_kv_cache_block_sizes(
+        kv_cache_config, config
+    )
+    kv_cache_config.hash_block_size = hash_block_size
+    kv_cache_config.cache_hit_alignment_tokens = (
+        kv_cache_utils.resolve_cache_hit_alignment_tokens(
+            kv_cache_config, config, block_size, hash_block_size
+        )
+    )
+    scheduler = Scheduler(
+        vllm_config=config,
+        kv_cache_config=kv_cache_config,
+        structured_output_manager=StructuredOutputManager(config),
+        block_size=block_size,
+        hash_block_size=hash_block_size,
+    )
+    kv_cache_utils.init_none_hash(sha256)
+    block_hasher = kv_cache_utils.get_request_block_hasher(hash_block_size, sha256)
+
+    prefix = [(index * 37) % 1000 + 1 for index in range(2048)]
+    hits = []
+    for request_id, suffix in enumerate((5, 9, 5, 5, 9)):
+        sampling_params = SamplingParams(max_tokens=1, ignore_eos=True)
+        sampling_params.update_from_generation_config({}, 0)
+        request = Request(
+            request_id=str(request_id),
+            prompt_token_ids=prefix + [suffix] * 300,
+            sampling_params=sampling_params,
+            pooling_params=None,
+            block_hasher=block_hasher,
+        )
+        scheduler.add_request(request)
+        while request.request_id in scheduler.requests:
+            output = scheduler.schedule()
+            hits.extend(
+                new.num_computed_tokens
+                for new in output.scheduled_new_reqs
+                if new.req_id == request.request_id
+            )
+            scheduled = output.num_scheduled_tokens[request.request_id]
+            prompt_done = (
+                request.num_computed_tokens + scheduled >= request.num_prompt_tokens
+            )
+            scheduler.update_from_output(
+                output,
+                ModelRunnerOutput(
+                    req_ids=[request.request_id],
+                    req_id_to_index={request.request_id: 0},
+                    sampled_token_ids=[[7] if prompt_done else []],
+                ),
+            )
+    return block_size, hits
+
+
+@pytest.mark.parametrize("retention", [0, 1024])
+def test_v4_prefix_cache_hits_are_independent_of_pcp(tmp_path, monkeypatch, retention):
+    pytest.importorskip("torch")
+    pytest.importorskip("vllm")
+    from transformers import GPT2Config
+
+    monkeypatch.setenv("VLLM_USE_V2_MODEL_RUNNER", "1")
+    model_path = tmp_path / "scheduler-model"
+    GPT2Config(
+        n_layer=1,
+        n_head=1,
+        n_embd=16,
+        n_positions=8192,
+        architectures=["GPT2LMHeadModel"],
+    ).save_pretrained(model_path)
+    single_rank = _v4_scheduler_prefix_hits(model_path, 1, retention)
+    block_size, hits = _v4_scheduler_prefix_hits(model_path, 2, retention)
+    assert (block_size, hits) == single_rank
+    assert hits[0] == 0
+    assert max(hits) > 0
+    assert all(hit % block_size == 0 for hit in hits)

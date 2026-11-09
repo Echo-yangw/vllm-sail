@@ -85,13 +85,12 @@ def _validate_pcp_config(vllm_config: VllmConfig) -> None:
         or parallel_config.use_ubatching
         or vllm_config.speculative_config is not None
         or vllm_config.kv_transfer_config is not None
-        or vllm_config.cache_config.enable_prefix_caching
         or vllm_config.kernel_config.moe_backend in MEGA_MOE_BACKENDS
     )
     if unsupported:
         raise NotImplementedError(
             "DeepSeek V4 PCP on PPU requires one node, DCP=PP=DP=1, no "
-            "prefix caching, speculation, KV transfer, microbatching, or MegaMoE."
+            "speculation, KV transfer, microbatching, or MegaMoE."
         )
     if vllm_config.compilation_config.cudagraph_mode != CUDAGraphMode.NONE:
         raise NotImplementedError(
