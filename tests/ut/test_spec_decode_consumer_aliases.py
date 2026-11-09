@@ -4,14 +4,13 @@
 from __future__ import annotations
 
 import ast
-import functools
 import importlib.util
+import sys
 from types import ModuleType, SimpleNamespace
 
 import pytest
 
 from tests.support.source import ROOT, function
-from vllm_sail.patch.bodies import bind_body
 
 PROVIDER = "vllm.v1.worker.gpu.spec_decode.rejection_sampler_utils"
 CONSUMERS = (
@@ -36,10 +35,29 @@ def _declared_consumers():
     return ast.literal_eval(declarations[0].value)
 
 
+def test_borrowed_bodies_keep_distinct_provider_globals_and_metadata():
+    from vllm_sail.patch._upstream import runtime as bodies
+    from vllm_sail.patch.bodies import bind_body
+
+    runner, sampler = ModuleType("runner"), ModuleType("sampler")
+    for body, provider in (
+        (bodies.may_reinitialize_input_batch, runner),
+        (bodies.rejection_sample, sampler),
+    ):
+        bound = bind_body(body, provider)
+        assert bound.__globals__ is provider.__dict__
+        assert bound.__code__ is body.__code__
+        assert bound.__defaults__ is body.__defaults__
+        assert bound.__kwdefaults__ is body.__kwdefaults__
+        assert bound.__annotations__ == body.__annotations__
+        assert bound.__doc__ == body.__doc__
+    assert runner.__dict__ is not sampler.__dict__
+
+
 @pytest.fixture
-def installer():
-    provider = ModuleType(PROVIDER)
-    modules = {PROVIDER: provider}
+def installer(modules, monkeypatch, patch_utils_module):
+    provider = modules(PROVIDER)
+    loaded = sys.modules
     patches = []
     platform = SimpleNamespace(ppu=True)
 
@@ -50,35 +68,44 @@ def installer():
         return "ppu", args, kwargs
 
     provider.rejection_sample = original
+    # The body is a collaborator of the installer seam. Numerical/geometry
+    # tests exercise the real borrowed bodies; here distinguish dispatch paths.
+    from vllm_sail.patch._upstream import runtime as bodies
 
-    def patch(module_name, attribute, **metadata):
-        def apply(dispatch):
-            setattr(modules[module_name], attribute, dispatch)
-            patches.append((module_name, attribute))
-            return dispatch
-
-        return apply
-
-    install = function(
-        RUNTIME,
-        "_install",
-        dict(
-            bind_body=bind_body,
-            functools=functools,
-            current_platform=SimpleNamespace(is_ppu=lambda: platform.ppu),
-            patch=patch,
-            sys=SimpleNamespace(modules=modules),
-            _CONSUMERS=_declared_consumers(),
+    monkeypatch.setattr(bodies, "rejection_sample", replacement)
+    modules(
+        "vllm.platforms", current_platform=SimpleNamespace(is_ppu=lambda: platform.ppu)
+    )
+    modules(
+        "vllm.v1.worker.gpu_model_runner",
+        GPUModelRunner=type(
+            "GPUModelRunner", (), {"may_reinitialize_input_batch": original}
         ),
     )
+    for name in CONSUMERS:
+        monkeypatch.delitem(sys.modules, name, raising=False)
+
+    def install(source=None):
+        path = ROOT / RUNTIME if source is None else source
+        spec = importlib.util.spec_from_file_location("_runtime_installer", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        patches.extend(
+            tuple(record.target.rsplit(".", 1))
+            for record in patch_utils_module.PATCH_REGISTRY
+            if record.target.endswith(".rejection_sample")
+        )
+        return module
+
     return SimpleNamespace(
         provider=provider,
-        modules=modules,
+        modules=loaded,
         patches=patches,
         platform=platform,
         original=original,
         replacement=replacement,
-        install=lambda: install(provider, provider, "rejection_sample", replacement),
+        install=install,
+        add_consumer=lambda name, consumer: monkeypatch.setitem(loaded, name, consumer),
     )
 
 
@@ -89,7 +116,7 @@ def test_preloaded_consumer_uses_the_same_platform_dispatcher(
 ):
     consumer = ModuleType(consumer_name)
     consumer.rejection_sample = installer.original
-    installer.modules[consumer_name] = consumer
+    installer.add_consumer(consumer_name, consumer)
     installer.platform.ppu = is_ppu
     installer.install()
 
@@ -110,7 +137,7 @@ def test_consumer_with_a_different_binding_is_preserved(installer, consumer_name
         return "unrelated"
 
     consumer.rejection_sample = unrelated
-    installer.modules[consumer_name] = consumer
+    installer.add_consumer(consumer_name, consumer)
     installer.install()
 
     assert consumer.rejection_sample is unrelated
@@ -120,9 +147,41 @@ def test_consumer_with_a_different_binding_is_preserved(installer, consumer_name
 def test_cold_install_does_not_load_consumers(installer):
     installer.install()
 
-    assert set(installer.modules) == {PROVIDER}
+    assert all(name not in installer.modules for name in CONSUMERS)
     assert installer.provider.rejection_sample() == ("ppu", (), {})
     assert installer.patches == [(PROVIDER, "rejection_sample")]
+
+
+@pytest.mark.parametrize("fault", ["consumer-rebind", "platform-branch"])
+def test_installer_checks_detect_controlled_faults(installer, tmp_path, fault):
+    """Inject faults into a temporary installer, then use the same observations."""
+    tree = ast.parse((ROOT / RUNTIME).read_text())
+    install = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_install"
+    )
+    if fault == "consumer-rebind":
+        install.body = [node for node in install.body if not isinstance(node, ast.If)]
+    else:
+        dispatch = next(
+            node for node in install.body if isinstance(node, ast.FunctionDef)
+        )
+        branch = next(node for node in dispatch.body if isinstance(node, ast.If))
+        branch.test = ast.Constant(True)
+    source = tmp_path / "runtime.py"
+    source.write_text(ast.unparse(ast.fix_missing_locations(tree)))
+    consumer = ModuleType(CONSUMERS[0])
+    consumer.rejection_sample = installer.original
+    installer.add_consumer(consumer.__name__, consumer)
+    installer.platform.ppu = False
+    installer.install(source)
+    if fault == "consumer-rebind":
+        with pytest.raises(AssertionError):
+            assert consumer.rejection_sample is installer.provider.rejection_sample
+    else:
+        with pytest.raises(AssertionError):
+            assert consumer.rejection_sample() == ("upstream", (), {})
 
 
 @pytest.mark.upstream_source
@@ -165,7 +224,7 @@ def test_real_watermark_wrapper_preserves_sampling_inputs(
 ):
     consumer = ModuleType("vllm.v1.watermarking.spec_decode")
     consumer.rejection_sample = installer.original
-    installer.modules[consumer.__name__] = consumer
+    installer.add_consumer(consumer.__name__, consumer)
     installer.platform.ppu = is_ppu
     installer.install()
     watermarker = SimpleNamespace(context_width=3)

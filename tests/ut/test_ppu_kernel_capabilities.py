@@ -4,13 +4,13 @@
 from __future__ import annotations
 
 import ast
-import importlib.util
 import sys
 import types
 from pathlib import Path
 
 import pytest
 
+from tests.support.modules import load_patch
 from tests.support.source import function
 
 ROOT = Path(__file__).parents[2]
@@ -58,70 +58,6 @@ def test_optional_gate_consumer_inventory_matches_upstream(
                         discovered[alias.name].add(module)
             pending.extend(ast.iter_child_nodes(node))
     assert discovered == {name: set(consumers) for name, consumers in inventory.items()}
-
-
-@pytest.fixture
-def modules(monkeypatch, patch_utils_module):
-    loaded = {}
-
-    def add(name, **attrs):
-        if name not in loaded:
-            mod = types.ModuleType(name)
-            mod.__path__ = []
-            mod.__package__ = name.rpartition(".")[0]
-            loaded[name] = mod
-            monkeypatch.setitem(sys.modules, name, mod)
-            parent, _, leaf = name.rpartition(".")
-            if parent:
-                setattr(add(parent), leaf, mod)
-        loaded[name].__dict__.update(attrs)
-        return loaded[name]
-
-    add(
-        "vllm_sail.patch.utils",
-        **{
-            name: getattr(patch_utils_module, name)
-            for name in ("patch", "PATCH_MARKER")
-        },
-    )
-    spec = importlib.util.spec_from_file_location(
-        "vllm_sail.patch.bodies", ROOT / "vllm_sail/patch/bodies.py"
-    )
-    helpers = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(helpers)
-    add("vllm_sail.patch.bodies", bind_body=helpers.bind_body)
-    spec = importlib.util.spec_from_file_location(
-        "_ppu_warmup_body",
-        ROOT / "vllm_sail/model_executor/warmup/ppu_kernel_warmup.py",
-    )
-    warmup_body = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(warmup_body)
-    add(
-        "vllm_sail.model_executor.warmup.ppu_kernel_warmup",
-        kernel_warmup=warmup_body.kernel_warmup,
-    )
-    spec = importlib.util.spec_from_file_location(
-        "_ppu_minimax_mlp_body", ROOT / "vllm_sail/models/minimax_m3_mlp.py"
-    )
-    mlp_body = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mlp_body)
-    add("vllm_sail.models.minimax_m3_mlp", init_mlp=mlp_body.init_mlp)
-    return add
-
-
-def load_patch(relative):
-    spec = importlib.util.spec_from_file_location("_capability_patch", ROOT / relative)
-    mod = importlib.util.module_from_spec(spec)
-    previous = sys.modules.get(spec.name)
-    sys.modules[spec.name] = mod
-    try:
-        spec.loader.exec_module(mod)
-    finally:
-        if previous is None:
-            sys.modules.pop(spec.name, None)
-        else:
-            sys.modules[spec.name] = previous
-    return mod
 
 
 def complete_warmup_contract(modules, provider, worker, platform, *, entered=None):

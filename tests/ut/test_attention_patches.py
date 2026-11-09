@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.ut.test_upstream_version_precheck import SUPPORTED_RANGE
+from tests.support.upstream import SUPPORTED_RANGE
 
 pytest.importorskip("torch", reason="requires torch")
 pytest.importorskip("vllm", reason="requires vLLM")

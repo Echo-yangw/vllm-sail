@@ -7,9 +7,6 @@ from unittest.mock import ANY
 import pytest
 
 from tests.support.source import definition, function
-from tests.ut.test_ppu_kernel_capabilities import modules as _modules
-
-modules = _modules
 
 PATCH = "vllm_sail/patch/enhancement/attention/mla_indexer.py"
 

@@ -8,7 +8,7 @@ scheduling / config / sampling / tokenization *logic* rather than concrete
 kernel numerics -- therefore run unchanged inside the vllm-sail runtime. This
 module is the mechanism that makes that reuse explicit, auditable and CI-gated.
 
-Design rules (mirroring :mod:`tests.ut.test_upstream_version_precheck`):
+Design rules (shared with the pinned-source contract tests):
 
 * Importing this module never imports torch or vLLM. It only reads the
   committed ``REUSE_MANIFEST.toml`` and shells out. Collection stays CPU-only,
@@ -632,9 +632,7 @@ class UpstreamRunner:
         if returncode in (2, 3) and errors == 0:
             errors = 1
             if not failed_names:
-                failed_names.append(
-                    f"PYTEST_EXIT_{returncode}::{entry.path}"
-                )
+                failed_names.append(f"PYTEST_EXIT_{returncode}::{entry.path}")
         # Code 5 means nothing was collected at all.  Force collected to 0
         # so the min_tests guard in consumers catches it reliably.
         if returncode == 5:

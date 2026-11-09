@@ -1,0 +1,51 @@
+[
+  {
+    "key": "deepseek-v4-flash_0731_w4a8_tp4",
+    "checkpoint": "LLM/deepseek-ai/v1.0/DeepSeek-V4-Flash-0731-w4a8",
+    "cards": 4,
+    "args": ["--gpu-memory-utilization=0.9", "--kv-cache-dtype", "fp8", "--block-size", "256", "--tensor-parallel-size", "4", "--no-enable-flashinfer-autotune", "--tokenizer-mode", "deepseek_v4", "--tool-call-parser", "deepseek_v4", "--enable-auto-tool-choice", "--reasoning-parser", "deepseek_v4", "--reasoning-config", "{\"reasoning_parser\":\"deepseek_v4\",\"reasoning_start_str\":\"\",\"reasoning_end_str\":\"\"}", "--speculative-config", "{\"method\":\"dspark\",\"num_speculative_tokens\":7,\"draft_sample_method\":\"probabilistic\"}"]
+  },
+  {
+    "key": "deepseek-v4-flash_0731_int8_tp8",
+    "checkpoint": "LLM/T-HEAD/v4/DeepSeek-V4-Flash-0731-W8A8-INT8",
+    "cards": 8,
+    "args": ["--gpu-memory-utilization=0.9", "--kv-cache-dtype", "fp8", "--block-size", "256", "--tensor-parallel-size", "8", "--no-enable-flashinfer-autotune", "--tokenizer-mode", "deepseek_v4", "--tool-call-parser", "deepseek_v4", "--enable-auto-tool-choice", "--reasoning-parser", "deepseek_v4", "--reasoning-config", "{\"reasoning_parser\":\"deepseek_v4\",\"reasoning_start_str\":\"\",\"reasoning_end_str\":\"\"}", "--speculative-config", "{\"method\":\"dspark\",\"num_speculative_tokens\":7,\"draft_sample_method\":\"probabilistic\"}"]
+  },
+  {
+    "key": "deepseek-v4-flash_int8_dp16_ep16_ll",
+    "checkpoint": "LLM/T-HEAD/v4/DeepSeek-V4-Flash-0731-W8A8-INT8",
+    "cards": 16,
+    "concurrency": 16,
+    "args": ["--kv-cache-dtype", "fp8", "--block-size", "256", "--max-num-batched-tokens", "1024", "--max-num-seqs", "128", "--gpu-memory-utilization=0.9", "--all2all-backend", "deepep_low_latency", "--enable-expert-parallel", "--data-parallel-size", "16", "--compilation-config", "{\"cudagraph_mode\":\"FULL_DECODE_ONLY\",\"custom_ops\":[\"all\"]}", "--tokenizer-mode", "deepseek_v4", "--tool-call-parser", "deepseek_v4", "--enable-auto-tool-choice", "--reasoning-parser", "deepseek_v4", "--reasoning-config", "{\"reasoning_parser\":\"deepseek_v4\",\"reasoning_start_str\":\"\",\"reasoning_end_str\":\"\"}", "--speculative-config", "{\"method\":\"dspark\",\"num_speculative_tokens\":7,\"draft_sample_method\":\"probabilistic\"}"]
+  },
+  {
+    "key": "glm-5.2_w8a8_tp16",
+    "checkpoint": "ppu_quantization/qlean-test/GLM-5.2-int8-qyj",
+    "cards": 16,
+    "args": ["--tensor-parallel-size", "16", "--max-model-len", "auto"]
+  },
+  {
+    "key": "kimi-k2.6_w4a8_tp16",
+    "checkpoint": "LLM/kimi/v2.6/Kimi-K2.6-W4A8-INT8",
+    "cards": 16,
+    "args": ["--tensor-parallel-size", "16", "--max-model-len", "auto"]
+  },
+  {
+    "key": "qwen3.5-35b_bf16_tp2",
+    "checkpoint": "LLM/qwen/v3.5/Qwen3.5-35B-A3B",
+    "cards": 2,
+    "args": ["--dtype", "bfloat16", "--tensor-parallel-size", "2", "--no-enable-prefix-caching"]
+  },
+  {
+    "key": "minimax-m3-bf16_tp16",
+    "checkpoint": "LLM/minimax/M3/MiniMax-M3",
+    "cards": 16,
+    "args": ["--tensor-parallel-size", "16", "--gpu-memory-utilization", "0.9", "--max-model-len", "auto", "--block-size", "128", "--reasoning-parser", "minimax_m3", "--tool-call-parser", "minimax_m3", "--enable-auto-tool-choice", "--no-enable-prefix-caching"]
+  },
+  {
+    "key": "qwen3.5-397b_int8_tp8_ep8",
+    "checkpoint": "LLM/qwen/v3.5/Qwen3.5-397B-A17B-W8A8-INT8",
+    "cards": 8,
+    "args": ["--tensor-parallel-size", "8", "--no-enable-prefix-caching", "--enable-expert-parallel", "--max-model-len", "auto"]
+  }
+]

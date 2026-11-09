@@ -8,7 +8,7 @@ import pytest
 
 from tests.support.source import function
 
-PATCH = "vllm_sail/patch/enhancement/runtime.py"
+PATCH = "vllm_sail/patch/_upstream/runtime.py"
 
 
 @pytest.fixture
@@ -97,6 +97,34 @@ def test_one_argument_call_keeps_ppu_context_invalidation(
         case,
         expected,
     )
+
+
+def test_context_only_invalidation_check_detects_removed_condition(
+    batch_geometry, tmp_path
+):
+    import ast
+
+    from tests.support.source import ROOT
+
+    tree = ast.parse((ROOT / PATCH).read_text())
+    body = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "may_reinitialize_input_batch"
+    )
+    branch = next(node for node in body.body if isinstance(node, ast.If))
+    # The fault removes the context comparison while retaining block geometry.
+    branch.test.values.pop()
+    source = tmp_path / "runtime.py"
+    source.write_text(ast.unparse(ast.fix_missing_locations(tree)))
+    with pytest.raises(AssertionError):
+        check_body(
+            lambda ns: function(source, "may_reinitialize_input_batch", ns),
+            batch_geometry,
+            "context-only",
+            1,
+        )
 
 
 @pytest.mark.upstream_source

@@ -4,8 +4,8 @@
 Adapted from vLLM-MetaX's ``vllm_metax/patch/utils.py``, with three additions:
 
 1. **Mandatory metadata.** ``reason``, ``affected_versions`` and ``remove_when``
-   are required keyword arguments, validated at import time. ``vllm_sail/patch/manifest.md``
-   is generated from them, so the documentation cannot drift from the code.
+   are required keyword arguments, validated at import time. The on-demand
+   ``tools/patch_manifest.py`` report displays the installed records' metadata.
 2. **A registry.** Every installed patch is recorded in :data:`PATCH_REGISTRY`
    so tooling can enumerate patches, and so the drift harness
    (``tools/check_patch_drift.py``) can hash the upstream source each patch

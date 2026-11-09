@@ -14,11 +14,8 @@ import pytest
 from tests.support.source import assert_accepts_upstream_keywords, function
 from tests.ut.test_kda_workspace_reservation import configs as constructor_configs
 from tests.ut.test_kda_workspace_reservation import kda_constructor as _kda_constructor
-from tests.ut.test_ppu_kernel_capabilities import modules as _modules
 
 kda_constructor = _kda_constructor
-modules = _modules
-
 
 @pytest.mark.parametrize("num_heads", [12, 24])
 def test_pla_prefill_preserves_caller_buffers(monkeypatch, num_heads):

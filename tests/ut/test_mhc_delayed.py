@@ -5,10 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.ut import test_ppu_kernel_capabilities as harness
+from tests.support.modules import load_patch
 
-modules = harness.modules
-load_patch = harness.load_patch
 PATH = "vllm_sail/patch/enhancement/attention/mhc_delayed.py"
 NAMES = ("mhc_pre_delayed_tilelang", "mhc_fused_post_pre_delayed_tilelang")
 

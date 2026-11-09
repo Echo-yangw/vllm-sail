@@ -29,10 +29,11 @@ jobs:
       - name: Run category-1 interface tests (skip upstream_source-marked)
         run: >-
           python -m pytest
-          tests/ut/test_upstream_interface_compat.py
+          tests/ut/test_patch_contracts.py
+          tests/ut/test_key_interface_contracts.py
           tests/ut/test_patch_idempotency.py
-          tests/ut/test_patch_manifest_signature.py
-          tests/ut/test_upstream_version_precheck.py
+          tests/ut/test_patch_value.py
+          tests/ut/test_maintenance_tools.py
           -q -m "not upstream_source"
 
   category2-gate:

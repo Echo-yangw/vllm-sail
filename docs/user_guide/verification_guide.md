@@ -222,6 +222,49 @@ For MoE, quantized or multi-device workloads, repeat the check using the intende
 expert backend, checkpoint layout and parallelism. A small dense-model smoke
 test does not cover those paths.
 
+### Zhenwu 810E serving sanity
+
+The [810E sanity runner](../../scripts/ci/ppu_810e_sanity.py) provides eight
+presets covering DeepSeek V4 W4A8/INT8 (TP4, TP8 and DP16/EP16 low latency),
+GLM-5.2 INT8 TP16, Kimi-K2.6 W4A8 TP16, Qwen3.5 BF16 TP2 and INT8 TP8/EP8,
+and MiniMax M3 BF16 TP16. Run it inside a prepared SAIL SDK container with the
+installed, compatible vLLM and vLLM SAIL wheels. It does not install packages or
+reserve hardware. Select idle cards before running; the full catalog needs 16
+visible 810E devices. It changes the HTTP bind address to loopback and assigns a
+served model name; model flags remain those in the preset catalog.
+
+```bash
+python scripts/ci/ppu_810e_sanity.py --list
+python scripts/ci/ppu_810e_sanity.py --dry-run
+python scripts/ci/ppu_810e_sanity.py \
+  --models qwen3.5-35b_bf16_tp2 \
+  --checkpoint-root /ppusw/datasets/checkpoints \
+  --results-dir /tmp/810e-sanity-qwen
+```
+
+Omit `--models` to run all presets sequentially. To use a checkpoint mounted at a
+different path, pass `--checkpoint KEY=/absolute/checkpoint/path`; the resolved
+path and config hash are recorded. Missing checkpoints or insufficient devices
+fail the selected case. The results directory must be new.
+The Qwen 397B INT8 preset uses the checkpoint directory suffix `W8A8-INT8`.
+
+Each case checks `/health` and `/v1/models`, sends a chat request and a repeated
+request, and requires nonempty content, generated tokens and a normal `stop`
+finish reason. Truncation at the output limit fails; the default budget is
+4096 output tokens per request (`--max-tokens` overrides it). DP16 uses a
+16-request burst after the first request; this does not establish per-rank
+routing. Responses with reasoning but empty content fail. The runner records exact commands,
+package paths and versions, device capabilities, startup logs, requests,
+responses and JSON results. It terminates its own server process group after
+each case. Any failed case makes the command exit nonzero. Startup and request
+timeouts default to 3600 and 600 seconds and can be overridden.
+The startup budget also sets vLLM's engine-ready timeout, so the multi-frontend
+DP launch cannot terminate earlier at its shorter internal default.
+
+These presets are test inputs, not a declaration of model support. Passing
+establishes inference for the recorded checkpoint and configuration; it does
+not establish dataset accuracy, tool-call correctness or benchmark performance.
+
 ## 5. Report correctness and performance
 
 Include the exact command, checkpoint identifier and revision, dtype,

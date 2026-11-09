@@ -15,7 +15,7 @@ from types import SimpleNamespace as NS
 import pytest
 
 from tests.support.source import function
-from tests.ut.test_upstream_version_precheck import SUPPORTED_RANGE
+from tests.support.upstream import SUPPORTED_RANGE
 from vllm_sail.patch.utils import PATCH_REGISTRY, original_of, patch
 
 MODULE_PATH = Path(__file__).parents[2] / "vllm_sail/patch/bugfix/async_llm_shutdown.py"

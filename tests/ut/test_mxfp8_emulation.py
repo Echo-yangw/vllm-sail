@@ -6,11 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.support.modules import load_patch
 from tests.support.source import function
-from tests.ut import test_ppu_kernel_capabilities as harness
-
-modules = harness.modules
-load_patch = harness.load_patch
 
 
 @pytest.mark.parametrize("is_ppu", [True, False])

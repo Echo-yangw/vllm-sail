@@ -5,10 +5,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from tests.ut.test_ppu_kernel_capabilities import load_patch
-from tests.ut.test_ppu_kernel_capabilities import modules as _modules
-
-modules = _modules
+from tests.support.modules import load_patch
 
 
 @pytest.mark.parametrize("ppu", [False, True])

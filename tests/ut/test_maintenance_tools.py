@@ -13,6 +13,43 @@ from tools import _common, check_patch_drift, patch_manifest
 from tools import port_upstream_kernels as upstream
 
 
+def test_patch_report_is_sorted_and_escapes_cells():
+    def record(target, reason):
+        return SimpleNamespace(
+            target=target,
+            kind="module",
+            reason=reason,
+            affected_versions=">=1,<2",
+            remove_when="upstream adds hook",
+        )
+
+    report = patch_manifest.render(
+        [record("vllm.z.run", "why | this\nnext"), record("vllm.a.run", "simple")]
+    )
+    assert report.index("vllm.a.run") < report.index("vllm.z.run")
+    assert "why &#124; this<br>next" in report
+    assert "actual installation results" in report
+    assert "do not cover every conditional" in report
+    assert "| Target |" in patch_manifest.render([])
+
+
+def test_patch_report_defaults_to_stdout_and_saves_only_explicit_paths(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr(patch_manifest, "load_patch_records", lambda command: [])
+    monkeypatch.chdir(tmp_path)
+    assert patch_manifest.main([]) == 0
+    expected = capsys.readouterr().out
+    assert expected.startswith("# Runtime patch manifest")
+    assert list(tmp_path.iterdir()) == []
+    destination = tmp_path / "report.md"
+    assert patch_manifest.main(["--output", str(destination)]) == 0
+    assert destination.read_text() == expected
+    assert capsys.readouterr().out == ""
+    assert patch_manifest.main(["--output", str(tmp_path / "absent/report.md")]) == 2
+    assert "cannot write report" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize("state", ["match", "missing", "drift"])
 def test_port_check_reports_drift(tmp_path, monkeypatch, capsys, state):
     destination = tmp_path / "committed"

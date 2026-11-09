@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import ast
 import importlib.util
-import os
 import sys
 import types
 from collections.abc import Iterator
@@ -399,12 +398,11 @@ def test_mxfp4_quantize_aliases_preserve_other_overrides(monkeypatch) -> None:
     assert consumer.moe_kernel_quantize_input is override
 
 
-def test_mxfp4_quantize_alias_inventory_matches_vllm_source() -> None:
-    if source := os.environ.get("VLLM_SOURCE_ROOT"):
-        root = Path(source).resolve() / "vllm"
-    else:
-        vllm = pytest.importorskip("vllm")
-        root = Path(vllm.__file__).resolve().parent
+@pytest.mark.upstream_source
+def test_mxfp4_quantize_alias_inventory_matches_vllm_source(
+    upstream_source_root,
+) -> None:
+    root = upstream_source_root / "vllm"
     module = _leaf("fused_moe_ppu")
     discovered = set()
     for path in root.rglob("*.py"):

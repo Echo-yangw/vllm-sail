@@ -6,9 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.ut import test_ppu_kernel_capabilities as harness
-
-modules = harness.modules
+from tests.support.modules import load_patch
 
 
 @pytest.mark.parametrize("ppu", [True, False])
@@ -44,7 +42,7 @@ def test_indexer_publishes_geometry_and_physical_pages(modules, ppu, ratio):
         DeepseekV4Indexer=Indexer,
     )
     modules("vllm.v1.attention.backends.mla.indexer", DeepseekV41IndexerBackend=Backend)
-    harness.load_patch("vllm_sail/patch/enhancement/models/deepseek_v41_indexer.py")
+    load_patch("vllm_sail/patch/enhancement/models/deepseek_v41_indexer.py")
     cache = Cache()
     cache.compress_ratio = ratio
     Indexer(cache)

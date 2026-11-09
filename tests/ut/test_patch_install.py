@@ -51,6 +51,7 @@ def test_all_categories_are_declared() -> None:
         if child.is_dir()
         and (child / "__init__.py").exists()
         and child.name != "template"
+        and not child.name.startswith("_")
     }
     assert on_disk == set(patch_pkg._CATEGORIES), (
         "A patch category exists on disk but is not in _CATEGORIES, so its "

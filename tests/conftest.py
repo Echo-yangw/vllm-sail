@@ -530,3 +530,41 @@ def patch_utils_module() -> Iterator[types.ModuleType]:
         yield module
     finally:
         sys.modules.pop(name, None)
+
+
+@pytest.fixture
+def modules(monkeypatch, patch_utils_module):
+    loaded = {}
+
+    def add(name, **attrs):
+        if name not in loaded:
+            mod = types.ModuleType(name)
+            mod.__path__ = (
+                [str(Path(__file__).parents[1].joinpath(*name.split(".")))]
+                if name.startswith("vllm_sail")
+                else []
+            )
+            mod.__package__ = name.rpartition(".")[0]
+            loaded[name] = mod
+            monkeypatch.setitem(sys.modules, name, mod)
+            parent, _, leaf = name.rpartition(".")
+            if parent:
+                setattr(add(parent), leaf, mod)
+        loaded[name].__dict__.update(attrs)
+        return loaded[name]
+
+    add(
+        "vllm_sail.patch.utils",
+        **{
+            name: getattr(patch_utils_module, name)
+            for name in ("patch", "PATCH_MARKER")
+        },
+    )
+    spec = importlib.util.spec_from_file_location(
+        "vllm_sail.patch.bodies",
+        Path(__file__).parents[1] / "vllm_sail/patch/bodies.py",
+    )
+    helpers = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helpers)
+    add("vllm_sail.patch.bodies", bind_body=helpers.bind_body)
+    return add

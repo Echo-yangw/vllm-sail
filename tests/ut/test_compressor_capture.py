@@ -11,9 +11,7 @@ from typing import cast
 import pytest
 
 from tests.support.source import ROOT, definition, function
-from tests.ut.test_ppu_kernel_capabilities import modules as _modules
 
-modules = _modules
 PATCH = "vllm_sail/patch/enhancement/models/deepseek_v4_compressor.py"
 UPSTREAM = "vllm/models/deepseek_v4/compressor.py"
 FORWARD_FIXTURE = "tests/fixtures/deepseek_v4_compressor_forward.py"

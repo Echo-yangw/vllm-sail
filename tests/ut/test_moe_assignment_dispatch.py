@@ -11,9 +11,6 @@ from types import SimpleNamespace as NS
 import pytest
 
 from tests.support.source import function
-from tests.ut.test_ppu_kernel_capabilities import modules as _modules
-
-modules = _modules
 
 PATCH = "vllm_sail/patch/enhancement/triton_moe.py"
 FUSED = "vllm/model_executor/layers/fused_moe/fused_moe.py"

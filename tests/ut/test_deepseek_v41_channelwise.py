@@ -5,14 +5,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.ut import test_ppu_kernel_capabilities as harness
+from tests.support.modules import load_patch
 from vllm_sail.models.deepseek_v41.config import (
     checkpoint_layer_name,
     normalize_expert_dtype,
 )
-
-modules = harness.modules
-load_patch = harness.load_patch
 
 
 @pytest.mark.parametrize("kind", ["deepseek_v41", "deepseek_v41_text"])

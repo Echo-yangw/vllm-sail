@@ -10,9 +10,7 @@ from types import SimpleNamespace as NS
 import pytest
 
 from tests.support.source import ROOT, definition, function
-from tests.ut.test_ppu_kernel_capabilities import modules as _modules
 
-modules = _modules
 UPSTREAM = "vllm/models/kimi_k3/nvidia/kda.py"
 KERNELS = "vllm/models/kimi_k3/nvidia/recoverssm/kernels.py"
 RECORDS = "vllm/models/kimi_k3/nvidia/ops/recoverssm.py"

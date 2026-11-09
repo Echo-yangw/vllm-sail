@@ -46,8 +46,11 @@ def target_function(arg: int) -> int:
 ```
 
 `reason`, `affected_versions` and `remove_when` are **mandatory** and validated at
-import. The [patch manifest](manifest.md) is generated from them by
-`tools/patch_manifest.py`; run it with `--check` to detect stale output.
+import. Generate an on-demand report from actual installation results with
+`python tools/patch_manifest.py`, or save it using `--output /tmp/patch-report.md`.
+Reports are not committed or used as test input. Each report covers only the
+current process and environment, including the conditional patches installed
+there; it is not an inventory of every possible platform path.
 `remove_when` must be a *verifiable condition* — "when upstream fixes it" is not
 acceptable; name the PR, the API, or the capability.
 
@@ -81,6 +84,32 @@ and mark only the changed lines:
 ```
 
 That is what makes the next upstream bump a diff rather than an investigation.
+
+### Borrowed bodies and direct source contracts
+
+The runtime pilot separates `enhancement/runtime.py` (installation, PPU dispatch
+and loaded-consumer rebinding) from `_upstream/runtime.py` (two maintained vLLM
+bodies with limited PPU changes). These bodies are not deterministically
+generated. Their source revision records reviewed provenance and does not select
+a runtime version. Bind each body to its own provider with `bind_body` so globals
+remain live; do not combine the sampler and model runner namespaces.
+
+CPU tests verify framework and feature behavior without importing the complete
+patch set. With `VLLM_SOURCE_ROOT` set to the pinned checkout, source tests check
+required targets, representative calls, registration APIs and consumer imports
+directly. Static discovery handles named constants, module aliases and finite
+literal loops; opaque installers require feature-specific source and behavior
+checks. Unknown forms fail with their location. An additive target is declared
+explicitly with `allow_missing=True`, never inferred from unavailable source.
+
+There is no interface signature lock to refresh. The existing
+`python tools/check_patch_drift.py` and `tools/patch_baseline.json` remain required
+upgrade review signals: binding compatibility does not establish unchanged
+upstream behavior. Do not refresh that baseline merely for a body relocation.
+The drift checker does not follow helper dependencies, its records depend on
+the installation environment, and missing captured source can still be reported
+as additive. Retiring it needs a separate, reviewed source-provenance and upgrade
+comparison workflow that distinguishes unresolved source from additive targets.
 
 ### Target forms
 

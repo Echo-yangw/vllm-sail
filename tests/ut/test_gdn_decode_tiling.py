@@ -9,9 +9,7 @@ from types import SimpleNamespace as NS
 import pytest
 
 from tests.support.source import function
-from tests.ut.test_ppu_kernel_capabilities import modules as _modules
 
-modules = _modules
 NAME = "fused_recurrent_gated_delta_rule_packed_decode"
 PATCH = "vllm_sail/patch/enhancement/attention/gdn.py"
 UPSTREAM = "vllm/third_party/flash_linear_attention/ops/fused_recurrent.py"

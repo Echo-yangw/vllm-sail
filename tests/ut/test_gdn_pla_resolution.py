@@ -6,12 +6,9 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from tests.ut.test_ppu_kernel_capabilities import load_patch
-from tests.ut.test_ppu_kernel_capabilities import modules as _modules
+from tests.support.modules import load_patch
 from vllm_sail import envs
 from vllm_sail.attention import gdn_decode
-
-modules = _modules
 
 
 @pytest.fixture

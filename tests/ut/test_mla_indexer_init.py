@@ -8,10 +8,7 @@ from types import SimpleNamespace as NS
 import pytest
 
 from tests.support.source import assert_accepts_upstream_keywords
-from tests.ut.test_ppu_kernel_capabilities import load_patch
-from tests.ut.test_ppu_kernel_capabilities import modules as _modules
-
-modules = _modules
+from tests.support.modules import load_patch
 
 PATCH = "vllm_sail/patch/enhancement/attention/mla_indexer.py"
 TARGET = "vllm.v1.attention.backends.mla.indexer"

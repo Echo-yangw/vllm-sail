@@ -8,7 +8,7 @@ exclude: |
   (?x)^(
     csrc/upstream/(?!manifest\.toml$).*|
     vllm_sail/patch/(bugfix|enhancement|performance|template)/.*|
-    vllm_sail/patch/manifest\.md|
+    vllm_sail/patch/_upstream/.*|
     vllm_sail/_version\.py
   )$
 
